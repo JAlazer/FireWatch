@@ -1,0 +1,4 @@
+# server-side ignoring
+.venv
+server/__pycache__
+
