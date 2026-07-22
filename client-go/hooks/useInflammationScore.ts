@@ -1,0 +1,1 @@
+// # fetches score from backend
