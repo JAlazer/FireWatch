@@ -1,0 +1,1 @@
+ # Request/response shape for Lifestyle payloads

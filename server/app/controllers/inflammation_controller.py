@@ -1,0 +1,1 @@
+# Endpoint for retrieving a user's computed inflammation level

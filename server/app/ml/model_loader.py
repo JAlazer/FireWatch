@@ -1,0 +1,1 @@
+# Loads the trained model artifact into memory once at startup

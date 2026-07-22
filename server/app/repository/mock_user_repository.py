@@ -1,0 +1,1 @@
+# Fake implementation reading from mock_users.py instead of a DB

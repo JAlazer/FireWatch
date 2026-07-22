@@ -1,0 +1,1 @@
+# Response shape for inflammation-level results

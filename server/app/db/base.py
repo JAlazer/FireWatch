@@ -1,0 +1,1 @@
+# Shared declarative base class all ORM models inherit from

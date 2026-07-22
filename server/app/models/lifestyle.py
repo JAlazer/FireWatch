@@ -1,0 +1,1 @@
+# DB table definition for Lifestyle survey answers
