@@ -11,3 +11,5 @@ Correlates lifestyle + HealthKit biometric data to inflammation levels.
   package's CLAUDE.md before making changes there.
 - Currently using mock data (see backend/app/data/mock_users.py) —
   no live HealthKit integration yet.
+
+See PROJECT_VISION.md for product context and current MVP scope before making architectural decisions.

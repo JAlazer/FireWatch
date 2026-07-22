@@ -2,8 +2,21 @@
 
 from fastapi import FastAPI
 
-app = FastAPI()
+from app.controllers import (
+    biometrics_controller,
+    inflammation_controller,
+    lifestyle_controller,
+    users_controller,
+)
+
+app = FastAPI(title="FireWatch API")
+
+app.include_router(users_controller.router)
+app.include_router(biometrics_controller.router)
+app.include_router(lifestyle_controller.router)
+app.include_router(inflammation_controller.router)
+
 
 @app.get("/")
-async def root():
-    return {"message": "Hello world!"}
+async def root() -> dict:
+    return {"message": "FireWatch API"}
