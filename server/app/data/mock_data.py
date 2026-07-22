@@ -32,7 +32,7 @@ class Lifestyle:
     """
     A Lifestyle is made up of qualitative pieces of information about a user's lifestyle.
     They are as follows:
-     - dietSentiment <- "Very Unhealthy" | "Unhealthy" | "Moderate" | "Healthy" | "Very Healthy"
+     - dietSentiment <- "Very Unhealthy" | "Unhealthy" | "Moderate" | "Healthy" | "Very Healthy" 
      - hasAutoimmuneCondition <- boolean
      - isASmoker <- boolean
      - isAlcoholic <- boolean
