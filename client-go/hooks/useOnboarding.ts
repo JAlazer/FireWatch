@@ -1,1 +1,3 @@
-// # onboarding form state + submission
+import { useOnboardingContext } from '@/providers/OnboardingContext';
+
+export { useOnboardingContext as useOnboarding };
