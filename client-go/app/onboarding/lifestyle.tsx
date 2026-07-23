@@ -13,6 +13,7 @@ import { DietSelector } from '@/components/onboarding/DietSelector';
 import { LifestyleQuestion } from '@/components/onboarding/LifestyleQuestion';
 import type { LifestyleOption } from '@/types/lifestyle';
 import type { LifestyleProfileCreate } from '@/types/api';
+import { OnboardingErrorBanner } from '@/components/onboarding/OnboardingErrorBanner';
 
 const SMOKING_OPTIONS: LifestyleOption<LifestyleProfileCreate['smoking_status']>[] = [
   { value: 'never', label: 'Never smoked' },
@@ -52,6 +53,8 @@ export default function LifestyleScreen() {
       <Text style={styles.subheading}>
         Diet, substances, and medications directly influence inflammation markers.
       </Text>
+
+      <OnboardingErrorBanner />
 
       <DietSelector
         value={formState.diet ?? null}

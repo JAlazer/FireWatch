@@ -38,6 +38,12 @@ export const saveBiometrics = (userId: string, data: BiometricsCreate): Promise<
 export const getLifestyle = (userId: string): Promise<LifestyleProfileResponse> =>
   request<LifestyleProfileResponse>(`/users/${userId}/lifestyle`);
 
+export const createLifestyle = (userId: string, data: LifestyleProfileCreate): Promise<LifestyleProfileResponse> =>
+  request<LifestyleProfileResponse>(`/users/${userId}/lifestyle`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
 export const updateLifestyle = (userId: string, data: LifestyleProfileCreate): Promise<LifestyleProfileResponse> =>
   request<LifestyleProfileResponse>(`/users/${userId}/lifestyle`, {
     method: 'PUT',

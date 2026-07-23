@@ -13,3 +13,4 @@ class UserResponse(BaseModel):
     name: str
     email: str
     created_at: datetime
+    

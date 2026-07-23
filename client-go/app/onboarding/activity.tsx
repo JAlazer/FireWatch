@@ -5,6 +5,7 @@ import { useOnboarding } from '@/hooks/useOnboarding';
 import { LifestyleQuestion } from '@/components/onboarding/LifestyleQuestion';
 import type { LifestyleOption } from '@/types/lifestyle';
 import type { LifestyleProfileCreate } from '@/types/api';
+import { OnboardingErrorBanner } from '@/components/onboarding/OnboardingErrorBanner';
 
 const ACTIVITY_OPTIONS: LifestyleOption<LifestyleProfileCreate['activity_level']>[] = [
   { value: 'sedentary', label: 'Sedentary', description: 'Little to no exercise' },
@@ -28,6 +29,8 @@ export default function ActivityScreen() {
       <Text style={styles.subheading}>
         Exercise and stress both significantly affect inflammation.
       </Text>
+
+      <OnboardingErrorBanner />
 
       <LifestyleQuestion
         question="Activity level"

@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-nati
 import { useRouter } from 'expo-router';
 import { useOnboarding } from '@/hooks/useOnboarding';
 import { LifestyleQuestion } from '@/components/onboarding/LifestyleQuestion';
+import { OnboardingErrorBanner } from '@/components/onboarding/OnboardingErrorBanner';
 
 export default function AutoimmuneStatusScreen() {
   const router = useRouter();
@@ -15,6 +16,8 @@ export default function AutoimmuneStatusScreen() {
       <Text style={styles.subheading}>
         This helps us personalize your inflammation baseline.
       </Text>
+
+      <OnboardingErrorBanner />
 
       <LifestyleQuestion
         question="Do you have an autoimmune condition?"

@@ -52,4 +52,4 @@ norms to be meaningful here.
 - Server: FastAPI, layered — controllers → services → repositories →
   models, so mock → real DB is the same kind of swap
 - Lifestyle and biometrics are separate domains with separate
-  controllers/services/repositories, not merged into one
+  controllers/services/repositories, not merged into one 

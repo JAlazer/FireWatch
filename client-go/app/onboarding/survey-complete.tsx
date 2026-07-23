@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { useOnboarding } from '@/hooks/useOnboarding';
+import { OnboardingErrorBanner } from '@/components/onboarding/OnboardingErrorBanner';
 
 function formatBool(v?: boolean): string {
   if (v === undefined) return '—';

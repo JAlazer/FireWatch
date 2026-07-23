@@ -20,3 +20,11 @@ def update_lifestyle(
     repo: MockLifestyleRepository = Depends(get_lifestyle_repo),
 ) -> LifestyleProfileResponse:
     return lifestyle_service.update_lifestyle(user_id, data, repo)
+
+@router.post("/{user_id}/lifestyle", response_model=LifestyleProfileResponse, status_code=201)
+def create_lifestyle(
+    user_id: str,
+    data: LifestyleProfileCreate,
+    repo: MockLifestyleRepository = Depends(get_lifestyle_repo),
+) -> LifestyleProfileResponse:
+    return lifestyle_service.create_lifestyle(user_id, data, repo)
