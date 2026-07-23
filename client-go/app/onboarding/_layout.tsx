@@ -1,11 +1,7 @@
-import React from 'react';
-import { Stack } from 'expo-router';
-import { OnboardingContextProvider } from '@/providers/OnboardingContext';
+import { Stack } from "expo-router";
 
+// No visible header — the "Step 1 of 2" label lives inside the screen body
+// instead (to match the mockup, which has no grey nav bar).
 export default function OnboardingLayout() {
-  return (
-    <OnboardingContextProvider>
-      <Stack screenOptions={{ headerShown: false }} />
-    </OnboardingContextProvider>
-  );
+  return <Stack screenOptions={{ headerShown: false }} />;
 }
