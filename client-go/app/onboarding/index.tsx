@@ -1,4 +1,5 @@
 import { Picker } from "@react-native-picker/picker";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -124,6 +125,7 @@ function DisclosureSection({
 
 export default function Screen1() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   // Age: try HealthKit (null for now) → otherwise the user picks it on the wheel.
   // Check HealthKit FIRST: if it supplies an age, it pre-fills here (Continue
@@ -283,16 +285,20 @@ export default function Screen1() {
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
           disabled={age === null}
-          onPress={() =>
-            console.log("Screen 1 answers:", {
-              age,
-              ...life,
-              sick,
-              sickTypes,
-              meds,
-              medTypes,
-            })
-          }
+          onPress={() => {
+            // Collect which of the six items are on, then carry them to Screen 2.
+            const selectedKeys = [
+              ...Object.entries(life)
+                .filter(([, on]) => on)
+                .map(([key]) => key),
+              ...(sick ? ["sick"] : []),
+              ...(meds ? ["meds"] : []),
+            ];
+            router.push({
+              pathname: "/onboarding/markers",
+              params: { selected: selectedKeys.join(",") },
+            });
+          }}
           style={[styles.continue, age === null && styles.continueDisabled]}
         >
           <Text style={styles.continueText}>Continue</Text>
