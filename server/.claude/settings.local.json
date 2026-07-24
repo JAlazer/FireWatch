@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python *)",
+      "Bash(.venv/Scripts/uvicorn app.main:app --port 8001)",
+      "Bash(curl -s http://localhost:8001/users/user_001)",
+      "Bash(curl -s http://localhost:8001/users/user_003/inflammation)",
+      "Bash(curl -s http://localhost:8001/users/user_001/inflammation)",
+      "Bash(curl -s http://localhost:8001/users/user_002/inflammation)",
+      "Bash(pkill -f \"uvicorn app.main:app --port 8001\")",
+      "Bash(netstat -ano)",
+      "Bash(findstr :8001)",
+      "Bash(awk '{print $5}')",
+      "Bash(xargs -I{} taskkill /PID {} /F)",
+      "Bash(.venv/Scripts/uvicorn app.main:app --port 8002)",
+      "Bash(curl -s http://localhost:8002/users/user_001/inflammation)",
+      "Bash(curl -s http://localhost:8002/users/user_002/inflammation)",
+      "Bash(curl -s http://localhost:8002/users/user_003/inflammation)"
+    ]
+  }
+}
