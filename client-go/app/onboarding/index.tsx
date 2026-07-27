@@ -23,7 +23,7 @@ type LifeKey = "autoimmune" | "stressed" | "smokes" | "drinks";
 const LIFESTYLE: { key: LifeKey; label: string }[] = [
   { key: "autoimmune", label: "Autoimmune or inflammatory condition" },
   { key: "stressed", label: "Feeling stressed lately" },
-  { key: "smokes", label: "Smoking" },
+  { key: "smokes", label: "Smoking regularly" },
   { key: "drinks", label: "Drinking alcohol regularly" },
 ];
 
@@ -34,7 +34,7 @@ const MED_TYPES = [
   "Steroid or immune-suppressing medication",
 ];
 
-// One reusable chip: outlined when off ("no"), filled black when on ("yes").
+// One reusable chip: outlined when off ("no"), filled color when on ("yes").
 function ToggleChip({
   label,
   selected,
@@ -281,12 +281,15 @@ export default function Screen1() {
         </View>
       </ScrollView>
 
-      {/* ---- Continue pinned at the bottom (not wired up yet) ---- */}
+      {/* ---- Continue pinned at the bottom ---- */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
           disabled={age === null}
           onPress={() => {
-            // Collect which of the six items are on, then carry them to Screen 2.
+            // Collect which of the six items are on, then carry everything to
+            // Screen 2 — including age and the specific sick/med sub-types,
+            // which used to get dropped here (Screen 2 only received the
+            // top-level toggle keys before, never age/sickTypes/medTypes).
             const selectedKeys = [
               ...Object.entries(life)
                 .filter(([, on]) => on)
@@ -296,7 +299,12 @@ export default function Screen1() {
             ];
             router.push({
               pathname: "/onboarding/markers",
-              params: { selected: selectedKeys.join(",") },
+              params: {
+                selected: selectedKeys.join(","),
+                age: String(age),
+                sickTypes: sickTypes.join(","),
+                medTypes: medTypes.join(","),
+              },
             });
           }}
           style={[styles.continue, age === null && styles.continueDisabled]}
@@ -309,39 +317,45 @@ export default function Screen1() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff" },
+  container: { flex: 1, backgroundColor: "#F7F7F7" },
   scroll: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
 
   // header block
-  step: { fontSize: 14, color: "#9a9a9a", marginBottom: 6 },
-  heading: { fontSize: 28, fontWeight: "800", color: "#111", marginBottom: 8 },
-  subtitle: { fontSize: 15, color: "#777", lineHeight: 22 },
+  step: { fontSize: 14, color: "#AAA", marginBottom: 6 },
+  heading: { fontSize: 28, fontWeight: "800", color: "#1A1A1A", marginBottom: 8 },
+  subtitle: { fontSize: 15, color: "#888", lineHeight: 22 },
 
   // section + sub labels
-  label: { fontSize: 16, fontWeight: "700", color: "#111", marginTop: 28, marginBottom: 12 },
-  subLabel: { fontSize: 15, fontWeight: "600", color: "#333", marginBottom: 10 },
-  hint: { fontSize: 14, fontWeight: "400", color: "#aaa" },
-  helper: { fontSize: 14, color: "#777", marginTop: 8 },
+  label: { fontSize: 16, fontWeight: "700", color: "#1A1A1A", marginTop: 28, marginBottom: 12 },
+  subLabel: { fontSize: 15, fontWeight: "600", color: "#444", marginBottom: 10 },
+  hint: { fontSize: 14, fontWeight: "400", color: "#AAA" },
+  helper: { fontSize: 14, color: "#888", marginTop: 8 },
 
   // age scroll wheel
   pickerCard: {
+    backgroundColor: "#FFF",
     borderWidth: 1,
-    borderColor: "#e4e4e4",
+    borderColor: "#ececec",
     borderRadius: 14,
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
-  pickerItem: { fontSize: 20, color: "#111" },
+  pickerItem: { fontSize: 20, color: "#1A1A1A" },
   wheel: { height: 180 },
   doneBtn: {
     borderTopWidth: 1,
-    borderTopColor: "#eee",
+    borderTopColor: "#f0f0f0",
     paddingVertical: 12,
     alignItems: "center",
   },
-  doneText: { fontSize: 16, fontWeight: "600", color: "#111" },
+  doneText: { fontSize: 16, fontWeight: "700", color: "#E55A4E" },
 
   // revealed subsection
-  reveal: { marginTop: 14, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#eee" },
+  reveal: { marginTop: 14, paddingLeft: 12, borderLeftWidth: 2, borderLeftColor: "#F3C4BE" },
   sectionGap: { marginTop: 16 },
 
   // collapsed summary row
@@ -354,11 +368,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#e4e4e4",
-    backgroundColor: "#fafafa",
+    borderColor: "#ececec",
+    backgroundColor: "#FFF",
+    shadowColor: "#000",
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
-  summaryText: { flex: 1, fontSize: 15, fontWeight: "600", color: "#111", paddingRight: 8 },
-  chev: { fontSize: 14, color: "#666" },
+  summaryText: { flex: 1, fontSize: 15, fontWeight: "600", color: "#1A1A1A", paddingRight: 8 },
+  chev: { fontSize: 14, color: "#888" },
 
   // chips
   wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
@@ -367,10 +386,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#e4e4e4",
+    borderColor: "#ececec",
+    backgroundColor: "#FFF",
   },
-  chipSelected: { backgroundColor: "#111", borderColor: "#111" },
-  chipText: { fontSize: 15, color: "#333" },
+  chipSelected: { backgroundColor: "#E55A4E", borderColor: "#E55A4E" },
+  chipText: { fontSize: 15, color: "#444" },
   chipTextSelected: { color: "#fff", fontWeight: "600" },
 
   // bottom bar
@@ -379,14 +399,14 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: "#f0f0f0",
-    backgroundColor: "#fff",
+    backgroundColor: "#F7F7F7",
   },
   continue: {
-    backgroundColor: "#111",
+    backgroundColor: "#E55A4E",
     borderRadius: 16,
     paddingVertical: 18,
     alignItems: "center",
   },
-  continueDisabled: { backgroundColor: "#ccc" },
+  continueDisabled: { backgroundColor: "#F3C4BE" },
   continueText: { color: "#fff", fontSize: 17, fontWeight: "700" },
 });
