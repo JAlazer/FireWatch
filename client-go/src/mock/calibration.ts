@@ -63,20 +63,42 @@ export interface ChangeLog {
   backfill_event: { probability_per_generation: number; max_lag_days: number };
 }
 
+/** Wear: night vs day, each with its own probability; then per-metric gates. */
+export interface WearModel {
+  day: { hours: [number, number]; wear_prob: number };
+  night: { hours: [number, number]; wear_prob: number };
+}
+
+/** Per-metric recording gate/cadence, conditional on wear. */
+export interface Recording {
+  gate: "wear-only" | "still-periods" | "daily-summary";
+  cadence: "two-regime" | "poisson" | "none";
+  background_gap_s?: number;
+  burst_gap_s?: number;
+  day_gate_per_hour?: number;
+  night_gate_per_hour?: number;
+}
+
 const calibration = raw as unknown as {
   schema_version: string;
   change_log: ChangeLog;
-  device_behavior: Record<string, DeviceBehavior>;
+  wear_model: WearModel;
+  device_behavior: Record<string, DeviceBehavior & { recording: Recording }>;
   physiology: Record<string, unknown>;
 };
 
 export const SCHEMA_VERSION: string = calibration.schema_version;
 export const CHANGE_LOG: ChangeLog = calibration.change_log;
+export const WEAR_MODEL: WearModel = calibration.wear_model;
 
-export function deviceBehavior(metricKey: string): DeviceBehavior {
+export function deviceBehavior(metricKey: string): DeviceBehavior & { recording: Recording } {
   const db = calibration.device_behavior[metricKey];
   if (!db) throw new Error(`No device_behavior for metric "${metricKey}"`);
   return db;
+}
+
+export function recording(metricKey: string): Recording {
+  return deviceBehavior(metricKey).recording;
 }
 
 export function physiology<T = unknown>(metricKey: string): T {

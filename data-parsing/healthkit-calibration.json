@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.5.0",
+  "schema_version": "0.6.0",
   "_schema": {
     "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
     "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -21,10 +21,13 @@
         "records_in_window": 430950,
         "n_individuals": 1,
         "reference_age": 21,
-        "device": "Apple Watch",
+        "device_hardware": "Watch4 (Apple Watch Series 4, 2018)",
+        "device_software": "watchOS 10.6.1 -> 10.6.2",
         "reference_status": "NOT a healthy-baseline reference"
       }
     ],
+    "_device_era_caveat": "device_behavior is calibrated from a Watch4 (2018 hardware) on watchOS 10.6 -- a device capped at watchOS 10, i.e. OLD hardware running recent software. Our users will largely be on NEWER watches whose sampling algorithms (cadence, gating, arrival timing) differ. This is a LARGER extrapolation than the window question below and the biggest single caveat on device_behavior. Re-calibrate when a newer-device export is available.",
+    "_window_decision": "KEEP POOLED 12-month window. Evidence: a single hardware id (Watch4) appears throughout the window (the Jan-Feb 2026 gap is the same watch not worn, then resumed) -- so there is NO device era to separate. The HR intra-day cadence shift (6s->159s pooled vs post-gap) is ACTIVITY-driven on one device (workout bursts, more exercise pre-gap), not a device blend; pooling actually preserves the burst regime a post-gap-only basis would under-represent. The RespiratoryRate/Sleep onsets (Mar/Jun 2026) are a settings/overnight-wear change on the same capable device, not new capability.",
     "_calibration_caveat": "n=1. device_behavior is CALIBRATED from one person's Watch (its algorithms, wearer-independent). physiology population centroids/spreads are literature/assumed and are NOT anchored on this individual -- two independent reasons: the source is a single ~21yo, AND is not a healthy-baseline reference. On the APPLE (device) scale, the source's calibrated HRV daily median (~47ms) lands almost exactly on his own age band (~47). The earlier 'sits below his band' reading was an artifact of comparing Apple-scale data to ECG-scale norms (~8.3ms offset), not evidence about him -- he is unremarkable on device-scale norms, NOT high and NOT low. within-person daily sd and lag-1 autocorrelation stay `calibrated` but may include state-driven excursions and likely overstate variability for an unaffected individual. No flare/episode periods were identified or extracted (no labels; inferring them from the signal we model would be circular). Adding exports: POOL device_behavior, WIDEN physiology.",
     "_privacy": "Source described technically only; no clinical detail recorded in this committed file."
   },
@@ -36,6 +39,31 @@
       "probability_per_generation": 0.05,
       "max_lag_days": 30,
       "_basis": "assumed: a rare device-restore backfill delivers old records at once. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one."
+    }
+  },
+  "wear_model": {
+    "day": {
+      "source": "assumed",
+      "hours": [
+        7,
+        23
+      ],
+      "wear_prob": 0.9,
+      "_basis": "assumed; recent steady daytime wear ~90%. The pooled 75% coverage is a ~2-month-outage (Dec2025-Feb2026) artifact, not the typical rate."
+    },
+    "night": {
+      "source": "assumed",
+      "model": "per-night-bernoulli",
+      "hours": [
+        23,
+        7
+      ],
+      "wear_prob": 0.4,
+      "_basis": "assumed and UNSTABLE -- NOT a measured rate. Overnight-wear proxy (RespiratoryRate presence) by block is 0,0,0,0,0,0,0,0,46,29,0,0,43,100 (%); the last is a 2-day stub and two May blocks are 0 between 29 and 43. ~0.40 is a rough recent central value. Whole sleep window covered or none."
+    },
+    "streakiness": {
+      "todo": true,
+      "_note": "TODO: a 2-state (worn/not) run-length model to reproduce the Dec2025-Feb2026 ~2-month outage. Independent per-night/day Bernoulli scatters missing days evenly and cannot produce a multi-week gap. Deferred as the largest change."
     }
   },
   "device_behavior": {
@@ -65,7 +93,14 @@
         "p90": 319.0,
         "p95": 414.0
       },
-      "hour_of_day": "EMERGENT: not a fixed per-hour array. Activity-driven; a stored weight array would bake in the source's personal schedule (his morning-workout spike + evening activity). Timing comes from the activity model instead."
+      "hour_of_day": "EMERGENT: not a fixed per-hour array. Activity-driven; a stored weight array would bake in the source's personal schedule (his morning-workout spike + evening activity). Timing comes from the activity model instead.",
+      "recording": {
+        "gate": "wear-only",
+        "cadence": "two-regime",
+        "background_gap_s": 300,
+        "burst_gap_s": 6,
+        "_note": "HR records whenever worn (no stillness gate). Burst CADENCE (~6s) is a DEVICE property (calibrated); burst FREQUENCY/how-often-active is a PERSON property from the activity model / fitness_index -- kept SEPARATE so the pooled window doesn't bake in this individual's exercise frequency as device behavior."
+      }
     },
     "HeartRateVariabilitySDNN": {
       "source": "calibrated",
@@ -118,7 +153,14 @@
         0.03169,
         0.05137
       ],
-      "_hour_of_day_note": "kept in device_behavior, but partly BEHAVIORAL: reflects when the wearer was still enough for a reading, not purely the Watch's schedule."
+      "_hour_of_day_note": "kept in device_behavior, but partly BEHAVIORAL: reflects when the wearer was still enough for a reading, not purely the Watch's schedule.",
+      "recording": {
+        "gate": "still-periods",
+        "cadence": "poisson",
+        "day_gate_per_hour": 0.17,
+        "night_gate_per_hour": 0.27,
+        "_basis": "day 0.17 = HRV present in 17% of worn day-hours (worn-active split). night 0.27 = HRV present in 27% of ACTUAL asleep hour-cells (SleepAnalysis, 14 nights -- thin, assumed); ABOVE daytime as expected since sleep is stillest. Poisson/exponential gaps; observed p95/p50=3.85 is slightly lighter-tailed than exponential (4.32), so Poisson marginally over-produces long gaps."
+      }
     },
     "RestingHeartRate": {
       "source": "calibrated",
@@ -170,13 +212,18 @@
         0.00377,
         0.0,
         0.0
-      ]
+      ],
+      "recording": {
+        "gate": "daily-summary",
+        "cadence": "none",
+        "_note": "NOT a sampling process. Present iff the day had sufficient quiet coverage (i.e. worn); emitted once end-of-day at arrival_lag. No intraday cadence."
+      }
     },
     "RespiratoryRate": {
       "source": "synthesized",
       "enabled": false,
       "_stub": true,
-      "_reason": "present but sparse in the 12mo window (~10% of days; overnight-only wear); not enabled initially"
+      "_reason": "sparse in the 12mo window (~10% of days) purely because it is OVERNIGHT-WEAR gated -- Watch4/watchOS 10.6 supported respiratory rate the whole time, so feature availability was never the cause; not enabled initially"
     },
     "OxygenSaturation": {
       "source": "synthesized",
@@ -366,7 +413,7 @@
       "source": "synthesized",
       "enabled": false,
       "_stub": true,
-      "_reason": "present but sparse in the 12mo window (~10% of days; overnight-only wear); not enabled initially"
+      "_reason": "sparse in the 12mo window (~10% of days) purely because it is OVERNIGHT-WEAR gated -- Watch4/watchOS 10.6 supported respiratory rate the whole time, so feature availability was never the cause; not enabled initially"
     },
     "OxygenSaturation": {
       "source": "synthesized",

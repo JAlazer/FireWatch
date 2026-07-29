@@ -9,7 +9,7 @@
 // models then read that latent value and add sensor/intra-day variation. Emitting
 // day-independent draws would jitter where real physiology trends.
 
-import { CHANGE_LOG, centroidForAge, deviceBehavior, physiology } from "./calibration";
+import { CHANGE_LOG, WEAR_MODEL, centroidForAge, deviceBehavior, physiology, recording } from "./calibration";
 import { REGISTRY } from "./registry";
 import { Rng, deterministicUuid } from "./rng";
 import { baselineFactor, confoundFactor, type PhysiologyProfile } from "./profile";
@@ -180,19 +180,24 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
     rhrLatent[d] *= episodeFactor(profile, "RestingHeartRate", days[d]);
   }
 
-  // ---- wear: one worn/not-worn decision per day, shared across metrics ----
-  const wearCov = deviceBehavior("HeartRate").wear.coverage_pct / 100;
-  const wearRng = base.fork("wear");
-  const worn = days.map(() => wearRng.next() < wearCov);
+  // ---- wear: night vs day, SEPARATE Bernoullis (calibration wear_model) ----
+  // TODO(streakiness): these are independent per-day/night draws and cannot
+  // reproduce the source's ~2-month outage; a 2-state run-length model is deferred
+  // (see wear_model.streakiness).
+  const wm = WEAR_MODEL;
+  const dayRng = base.fork("wear:day");
+  const nightRng = base.fork("wear:night");
+  const dayWorn = days.map(() => dayRng.next() < wm.day.wear_prob);
+  const nightWorn = days.map(() => nightRng.next() < wm.night.wear_prob);
 
   // ---- emission ----
   const samples: GenSample[] = [];
   const idRng = base.fork("uuid");
   const rhrConf = confoundFactor(profile, "RestingHeartRate");
   const hrvConf = confoundFactor(profile, "HeartRateVariabilitySDNN");
+  const hrvRec = recording("HeartRateVariabilitySDNN");
+  const hrRec = recording("HeartRate");
 
-  const hrvHours = deviceBehavior("HeartRateVariabilitySDNN").hour_of_day_weights ?? [];
-  const hrvRpd = deviceBehavior("HeartRateVariabilitySDNN").records_per_day;
   const emit = (key: string, value: number, startMs: number, endMs: number, r: Rng, lagBucket: { p50: number; p90: number; p95: number }) => {
     const def = REGISTRY[key];
     samples.push({
@@ -212,28 +217,29 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
   const lagHrv = deviceBehavior("HeartRateVariabilitySDNN").arrival_lag_seconds;
   const lagHr = deviceBehavior("HeartRate").arrival_lag_seconds;
 
+  const emitHr = (v: number, s: number, e: number) => emit("HeartRate", v, s, e, eHr, lagHr);
+  const emitHrvAt = (t: number, latent: number) =>
+    emit("HeartRateVariabilitySDNN", latent * Math.exp(eHrv.normal(0, 0.08)) * hrvConf, t, t + 60_000, eHrv, lagHrv);
+
   for (let d = 0; d < nDays; d++) {
-    if (!worn[d]) continue; // unworn day -> empty (no zero-valued samples)
     const day = days[d];
+    const dOn = dayWorn[d];
+    const nOn = nightWorn[d];
+    if (!dOn && !nOn) continue; // fully unworn -> empty (no zero-valued samples)
 
-    // Resting HR: one computed daily summary, timestamped at day start, arriving
-    // ~17h later (the calibrated once-daily model).
-    emit("RestingHeartRate", rhrLatent[d] * rhrConf + eRhr.normal(0, 0.5), day, day + Math.round(13.5 * 3600_000), eRhr, lagRhr);
+    // Heart rate records whenever WORN (no stillness gate). Daytime = two-regime
+    // (background + activity bursts); overnight = background only (asleep, still).
+    if (dOn) emitHeartRateDay(eHr, day, rhrLatent[d], activityLevel, hrRec, emitHr);
+    if (nOn) emitHeartRateNight(eHr, day, rhrLatent[d], hrRec, emitHr);
 
-    // HRV: a few irregular short-window readings, placed by (partly behavioral)
-    // hour weights, value around the day's latent HRV.
-    const nHrv = Math.max(1, Math.round(eHrv.normal(hrvRpd.p50, 1)));
-    for (let i = 0; i < nHrv; i++) {
-      const hour = weightedHour(eHrv, hrvHours);
-      const t = day + hour * 3600_000 + eHrv.int(0, 3599) * 1000;
-      const v = hrvLatent[d] * Math.exp(eHrv.normal(0, 0.08)) * hrvConf; // sensor noise, log space
-      emit("HeartRateVariabilitySDNN", v, t, t + 60_000, eHrv, lagHrv);
-    }
+    // HRV is still-gated -> Poisson (exponential gaps) at a per-hour rate; night is
+    // denser than day because sleep is stillest. Night window crosses midnight.
+    if (dOn) emitHrvPoisson(eHrv, day, wm.day.hours[0], wm.day.hours[1], hrvRec.day_gate_per_hour!, (t) => emitHrvAt(t, hrvLatent[d]));
+    if (nOn) emitHrvPoisson(eHrv, day, wm.night.hours[0], wm.night.hours[1] + 24, hrvRec.night_gate_per_hour!, (t) => emitHrvAt(t, hrvLatent[d]));
 
-    // Heart rate: two-mode dense sampling (#8). Background ~5min when still;
-    // burst ~6s inside activity windows, HR rising from the resting floor toward
-    // resting + activityLevel. Timing is emergent (no stored hour array, #9).
-    emitHeartRate(eHr, day, rhrLatent[d], activityLevel, (v, s, e) => emit("HeartRate", v, s, e, eHr, lagHr));
+    // Resting HR: a computed DAILY SUMMARY, present iff the day had quiet coverage
+    // (i.e. worn at all), emitted end-of-day at the calibrated ~17h+ arrival lag.
+    if (dOn || nOn) emit("RestingHeartRate", rhrLatent[d] * rhrConf + eRhr.normal(0, 0.5), day, day + Math.round(13.5 * 3600_000), eRhr, lagRhr);
   }
 
   // ---- backfill event: a batch of old samples arriving at once (#6) ----
@@ -265,24 +271,44 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
   return { profile, range, traits, samples, events };
 }
 
-/** Pick an hour 0..23 by weight; falls back to uniform if weights absent. */
-function weightedHour(rng: Rng, weights: number[]): number {
-  if (weights.length !== 24) return rng.int(0, 23);
-  const total = weights.reduce((a, b) => a + b, 0);
-  let x = rng.next() * total;
-  for (let h = 0; h < 24; h++) {
-    x -= weights[h];
-    if (x <= 0) return h;
-  }
-  return 23;
+/** Knuth Poisson sampler (small means). */
+function poissonInt(rng: Rng, lambda: number): number {
+  if (lambda <= 0) return 0;
+  const L = Math.exp(-lambda);
+  let k = 0;
+  let p = 1;
+  do {
+    k++;
+    p *= rng.next();
+  } while (p > L);
+  return k - 1;
 }
 
-/** One day of heart rate as a two-mode process; `push(value, startMs, endMs)`. */
-function emitHeartRate(rng: Rng, day: number, restingFloor: number, activityLevel: number, push: (v: number, s: number, e: number) => void): void {
+/** HRV via a Poisson process (exponential gaps) over [hStart, hEnd) hours of a day. */
+function emitHrvPoisson(rng: Rng, dayMs: number, hStart: number, hEnd: number, ratePerHour: number, onTime: (t: number) => void): void {
+  const end = dayMs + hEnd * 3600_000;
+  let t = dayMs + hStart * 3600_000;
+  for (;;) {
+    t += (-Math.log(1 - rng.next()) / ratePerHour) * 3600_000; // exponential gap
+    if (t >= end) break;
+    onTime(t);
+  }
+}
+
+/**
+ * Daytime heart rate: two-regime. Background ~5min when still; ~6s bursts inside
+ * activity windows. CRITICAL SEPARATION (#4): the burst CADENCE (rec.burst_gap_s,
+ * ~6s) is a DEVICE property from calibration; how MANY/long the activity windows
+ * are is a PERSON property derived from activityLevel here -- so pooling the
+ * calibration window never bakes one person's exercise frequency into the device.
+ */
+function emitHeartRateDay(rng: Rng, day: number, restingFloor: number, activityLevel: number, rec: { background_gap_s?: number; burst_gap_s?: number }, push: (v: number, s: number, e: number) => void): void {
   const wake = day + 7 * 3600_000;
   const sleep = day + 23 * 3600_000;
-  // 0..2 activity windows, more likely for higher activity levels.
-  const nWin = rng.next() < 0.5 ? 1 : rng.next() < 0.4 ? 2 : 0;
+  const bg = (rec.background_gap_s ?? 300) * 1000;
+  const burst = (rec.burst_gap_s ?? 6) * 1000;
+  // Burst FREQUENCY from activity: median activity (~55) -> ~1 window/day.
+  const nWin = poissonInt(rng, Math.max(0, activityLevel / 55));
   const windows: { s: number; e: number; peak: number }[] = [];
   for (let i = 0; i < nWin; i++) {
     const s = wake + rng.uniform(0, sleep - wake - 45 * 60_000);
@@ -298,12 +324,25 @@ function emitHeartRate(rng: Rng, day: number, restingFloor: number, activityLeve
     if (w) {
       const frac = (t - w.s) / (w.e - w.s);
       hr = restingFloor + (w.peak - restingFloor) * Math.sin(Math.PI * frac) + rng.normal(0, 3);
-      step = 6_000;
+      step = burst;
     } else {
       hr = restingFloor + Math.max(0, rng.normal(18, 9)); // awake background
-      step = 300_000;
+      step = bg;
     }
     push(Math.max(restingFloor - 2, hr), t, t);
     t += step + rng.int(-2000, 2000);
+  }
+}
+
+/** Overnight heart rate: background only (asleep, still), near the resting floor.
+ *  Window 23:00 -> 07:00 next day. No activity bursts. */
+function emitHeartRateNight(rng: Rng, day: number, restingFloor: number, rec: { background_gap_s?: number }, push: (v: number, s: number, e: number) => void): void {
+  const bg = (rec.background_gap_s ?? 300) * 1000;
+  const end = day + (24 + 7) * 3600_000; // 07:00 the next day
+  let t = day + 23 * 3600_000;
+  while (t < end) {
+    const hr = restingFloor + Math.max(-3, rng.normal(0, 3)); // asleep, near resting
+    push(Math.max(restingFloor - 3, hr), t, t);
+    t += bg + rng.int(-2000, 2000);
   }
 }

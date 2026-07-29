@@ -86,7 +86,7 @@ REGISTRY = {
     "HeartRate":                    {"identifier": HK + "HeartRate",                    "enabled": True},
     "HeartRateVariabilitySDNN":     {"identifier": HK + "HeartRateVariabilitySDNN",     "enabled": True},
     "RestingHeartRate":             {"identifier": HK + "RestingHeartRate",             "enabled": True},
-    "RespiratoryRate":              {"identifier": HK + "RespiratoryRate",              "enabled": False, "reason": "present but sparse in the 12mo window (~10% of days; overnight-only wear); not enabled initially"},
+    "RespiratoryRate":              {"identifier": HK + "RespiratoryRate",              "enabled": False, "reason": "sparse in the 12mo window (~10% of days) purely because it is OVERNIGHT-WEAR gated -- Watch4/watchOS 10.6 supported respiratory rate the whole time, so feature availability was never the cause; not enabled initially"},
     "OxygenSaturation":             {"identifier": HK + "OxygenSaturation",             "enabled": False, "reason": "absent from export (needs Series 6+)"},
     "AppleSleepingWristTemperature":{"identifier": HK + "AppleSleepingWristTemperature","enabled": False, "reason": "absent from export (needs Series 8+)"},
     "StepCount":                    {"identifier": HK + "StepCount",                    "enabled": False, "reason": "disabled; parameters not yet authored"},
@@ -293,7 +293,7 @@ def main():
     enabled = [k for k, v in REGISTRY.items() if v["enabled"]]
 
     out = {
-        "schema_version": "0.5.0",
+        "schema_version": "0.6.0",
         "_schema": {
             "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
             "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -314,9 +314,28 @@ def main():
                 "records_in_window": s.get("record_total"),
                 "n_individuals": 1,
                 "reference_age": 21,
-                "device": "Apple Watch",
+                "device_hardware": "Watch4 (Apple Watch Series 4, 2018)",
+                "device_software": "watchOS 10.6.1 -> 10.6.2",
                 "reference_status": "NOT a healthy-baseline reference",
             }],
+            "_device_era_caveat": (
+                "device_behavior is calibrated from a Watch4 (2018 hardware) on watchOS 10.6 -- "
+                "a device capped at watchOS 10, i.e. OLD hardware running recent software. Our "
+                "users will largely be on NEWER watches whose sampling algorithms (cadence, "
+                "gating, arrival timing) differ. This is a LARGER extrapolation than the window "
+                "question below and the biggest single caveat on device_behavior. Re-calibrate "
+                "when a newer-device export is available."
+            ),
+            "_window_decision": (
+                "KEEP POOLED 12-month window. Evidence: a single hardware id (Watch4) appears "
+                "throughout the window (the Jan-Feb 2026 gap is the same watch not worn, then "
+                "resumed) -- so there is NO device era to separate. The HR intra-day cadence "
+                "shift (6s->159s pooled vs post-gap) is ACTIVITY-driven on one device (workout "
+                "bursts, more exercise pre-gap), not a device blend; pooling actually preserves "
+                "the burst regime a post-gap-only basis would under-represent. The "
+                "RespiratoryRate/Sleep onsets (Mar/Jun 2026) are a settings/overnight-wear "
+                "change on the same capable device, not new capability."
+            ),
             "_calibration_caveat": (
                 "n=1. device_behavior is CALIBRATED from one person's Watch (its algorithms, "
                 "wearer-independent). physiology population centroids/spreads are "
@@ -343,6 +362,17 @@ def main():
                 "_basis": "assumed: a rare device-restore backfill delivers old records at once. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one.",
             },
         },
+        # Wear is night-vs-day, then a per-metric recording gate conditional on
+        # wear (see device_behavior[m].recording). Night is binary per NIGHT (nobody
+        # removes the watch at 3am); day is a wear state plus gates.
+        "wear_model": {
+            "day": {"source": "assumed", "hours": [7, 23], "wear_prob": 0.90,
+                    "_basis": "assumed; recent steady daytime wear ~90%. The pooled 75% coverage is a ~2-month-outage (Dec2025-Feb2026) artifact, not the typical rate."},
+            "night": {"source": "assumed", "model": "per-night-bernoulli", "hours": [23, 7], "wear_prob": 0.40,
+                      "_basis": "assumed and UNSTABLE -- NOT a measured rate. Overnight-wear proxy (RespiratoryRate presence) by block is 0,0,0,0,0,0,0,0,46,29,0,0,43,100 (%); the last is a 2-day stub and two May blocks are 0 between 29 and 43. ~0.40 is a rough recent central value. Whole sleep window covered or none."},
+            "streakiness": {"todo": True,
+                            "_note": "TODO: a 2-state (worn/not) run-length model to reproduce the Dec2025-Feb2026 ~2-month outage. Independent per-night/day Bernoulli scatters missing days evenly and cannot produce a multi-week gap. Deferred as the largest change."},
+        },
         "device_behavior": {},
         "physiology": {},
     }
@@ -351,6 +381,25 @@ def main():
     # daily-summary timestamp, activity-emergent for heart rate, partly-behavioral
     # for HRV (when the wearer was still enough to read).
     HOUR_MODE = {"RestingHeartRate": "device", "HeartRate": "emergent", "HeartRateVariabilitySDNN": "partly"}
+
+    # Per-metric RECORDING gate (conditional on wear -- see wear_model). What makes
+    # a sample get written once the watch is on.
+    RECORDING = {
+        "HeartRate": {
+            "gate": "wear-only", "cadence": "two-regime",
+            "background_gap_s": 300, "burst_gap_s": 6,
+            "_note": "HR records whenever worn (no stillness gate). Burst CADENCE (~6s) is a DEVICE property (calibrated); burst FREQUENCY/how-often-active is a PERSON property from the activity model / fitness_index -- kept SEPARATE so the pooled window doesn't bake in this individual's exercise frequency as device behavior.",
+        },
+        "HeartRateVariabilitySDNN": {
+            "gate": "still-periods", "cadence": "poisson",
+            "day_gate_per_hour": 0.17, "night_gate_per_hour": 0.27,
+            "_basis": "day 0.17 = HRV present in 17% of worn day-hours (worn-active split). night 0.27 = HRV present in 27% of ACTUAL asleep hour-cells (SleepAnalysis, 14 nights -- thin, assumed); ABOVE daytime as expected since sleep is stillest. Poisson/exponential gaps; observed p95/p50=3.85 is slightly lighter-tailed than exponential (4.32), so Poisson marginally over-produces long gaps.",
+        },
+        "RestingHeartRate": {
+            "gate": "daily-summary", "cadence": "none",
+            "_note": "NOT a sampling process. Present iff the day had sufficient quiet coverage (i.e. worn); emitted once end-of-day at arrival_lag. No intraday cadence.",
+        },
+    }
 
     # Enabled metrics: calibrated device_behavior + physiology.
     for k in enabled:
@@ -374,6 +423,7 @@ def main():
             phys = {"within_person": within_person_from_summary(t, within_dist)}
             phys.update(PHYSIOLOGY_SYNTH.get(k, {}))
             out["physiology"][k] = phys
+        db["recording"] = RECORDING[k]
         out["device_behavior"][k] = db
 
     # Disabled metrics: present but stubbed, so enabling later is fill-in not add.
