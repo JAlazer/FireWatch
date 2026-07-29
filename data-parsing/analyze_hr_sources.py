@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 from datetime import datetime
 
-PATH = sys.argv[1] if len(sys.argv) > 1 else "Johan_Jul_26.xml"
+PATH = sys.argv[1] if len(sys.argv) > 1 else "export.xml"  # pass the (gitignored) export path as arg1
 FROM, TO = "2025-07-26", "2026-07-26"
 TYPE = "HKQuantityTypeIdentifierHeartRate"
 

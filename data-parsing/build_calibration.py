@@ -23,7 +23,7 @@ Two sections, different pooling behavior when more people are added:
                      center: centroids are age-conditioned from literature.
 
 Usage:
-    python build_calibration.py johan_summary_12mo.json -o healthkit-calibration.json
+    python build_calibration.py <summary_12mo>.json -o healthkit-calibration.json
 """
 
 import argparse
@@ -125,7 +125,7 @@ PHYSIOLOGY_SYNTH = {
             "source": "synthesized", "tag": "assumed", "age_conditioned": True, "unit": "count/min",
             "distribution": "normal",
             "by_age_band": {"20-29": 70, "30-39": 70, "40-49": 69, "50-59": 69, "60-69": 68, "70+": 67},
-            "_basis": "ASSUMED (no specific citation to hand -> `assumed`, not `literature`): adult resting HR mean ~70 bpm. Shape is a GENTLE MONOTONIC decline with age, consistent with Umetani 1998 (HR declines slowly with age); the earlier 70->72->70 mid-life hump had no cited basis and was removed. Population values, NOT from the source.",
+            "_basis": "ASSUMED (no specific citation to hand -> `assumed`, not `literature`): adult resting HR mean ~70 bpm. Shape is a GENTLE MONOTONIC decline with age, consistent with Umetani 1998 (HR declines slowly with age); the earlier 70->72->70 mid-life hump had no cited basis and was removed. Population values, NOT from the source. NOTE: unlike HRV, RHR has no continuous model block -- the age curve is band-interpolated (avoids the discontinuity problem) but is therefore NOT revisable by changing one constant the way HRV's ref_age/slope are; edit the bands directly.",
         },
         "between_person_spread": {"source": "synthesized", "tag": "assumed", "distribution": "normal", "sd": 10,
                                    "_basis": "assumed; population RHR SD ~9-11 bpm. Uncited -> `assumed`."},
@@ -171,19 +171,37 @@ def dev_behavior_from_summary(t, hour_mode="device"):
 
 
 def within_person_from_summary(t, distribution):
-    """CALIBRATED within-person day-to-day variability + persistence."""
+    """CALIBRATED within-person day-to-day variability + persistence.
+
+    Scale handling differs by distribution (finding #17):
+      lognormal (HRV) -> parameterise by CV and run AR(1) in LOG space. An
+        absolute sd measured at one median becomes the wrong CV for a user with a
+        different median (18.5 at median 47 = 39% CV, but 57% at median 32). CV
+        scales correctly; the absolute sd is kept only as measured provenance.
+      normal (RHR)    -> use the absolute sd directly, AR(1) in linear space.
+        Deliberate: RHR is normal and its level range is narrow, so CV-vs-absolute
+        barely matters. The asymmetry with HRV is intentional, not an oversight.
+    """
     dm = t.get("daily_mean_value") or {}
     ac = t.get("daily_mean_lag1_autocorr") or {}
-    return {
+    out = {
         "source": "calibrated",
         "distribution": distribution,
-        "daily_mean_sd": dm.get("sd"),
+        "daily_mean_sd": dm.get("sd"),   # measured absolute value (provenance)
         "daily_mean_p50": dm.get("p50"),
         "lag1_autocorr": ac.get("coef"),
         "lag1_autocorr_n_pairs": ac.get("n_pairs"),
         "_note": "day-to-day scatter of per-day means (intra-day scatter excluded), recent 12mo window.",
         "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual.",
     }
+    if distribution == "lognormal":
+        out["cv"] = round(dm.get("sd") / dm.get("p50"), 3)
+        out["ar1_space"] = "log"
+        out["_scale_note"] = "USE cv (geometric), not daily_mean_sd, so within-person spread scales with each user's median. AR(1) runs in log space."
+    else:
+        out["ar1_space"] = "linear"
+        out["_scale_note"] = "Absolute daily_mean_sd used directly (AR(1) in linear space). Deliberate for RHR: normal, narrow level range; CV scaling would barely differ."
+    return out
 
 
 def heart_rate_physiology(t):
@@ -207,24 +225,58 @@ def heart_rate_physiology(t):
                   "(RestingHeartRate) plus activity excursions. Raw-data view only, not a "
                   "scored marker -- it just needs to look plausible."),
         "resting_floor_from": "RestingHeartRate",
-        "activity_level": {
-            "_note": ("Per-user. Sets how far HR rises above resting (fitness/activity). This "
-                      "IS the cardiovascular-fitness confounder -- it must vary across users, "
-                      "not be fixed to the source."),
+        # #19: within-person day-to-day DRIFT of activity, distinct from the
+        # between-person sample point below. Matches the other two metrics' shape.
+        "within_person": {
+            "source": "calibrated",
+            "distribution": "normal",
+            "ar1_space": "linear",
+            "daily_activity_level_sd": dm.get("sd"),
+            "daily_activity_lag1_autocorr": ac.get("coef"),
+            "daily_activity_lag1_autocorr_n_pairs": ac.get("n_pairs"),
+            "_scale_note": "absolute sd, linear AR(1). HR daily-mean CV is small (~0.14), so absolute vs cv barely differs -- same rationale as RHR.",
+            "_note": "how much one person's activity varies day to day; the only measured source for HR drift. Consumed when the HR model gains daily activity drift (v2).",
+        },
+        "fitness_index": {
+            "_note": ("Per-user fitness proxy. Named for what it drives, not measured directly. "
+                      "In v1 it stands in for BOTH cardiorespiratory fitness (HR headroom) and "
+                      "activity volume -- distinct concepts collapsed for now. It is the "
+                      "cardiovascular-FITNESS confounder: it moves resting HR and HRV (see "
+                      "fitness_effects), not only HR excursions. It ALSO sets the HR excursion "
+                      "PEAK; note that in v1 the intra-day burst FREQUENCY and DURATION are NOT "
+                      "yet fitness-tied (a v1 simplification -- see "
+                      "device_behavior.HeartRate.intra_day_gap_seconds._regime, which references "
+                      "back here; reconcile in step 5)."),
             "population": {
                 "source": "synthesized", "tag": "assumed", "distribution": "lognormal",
-                "parameter": "peak_excursion_bpm_over_resting",
+                "parameter": "peak_hr_excursion_bpm_over_resting",  # proxy scale for the index
                 "median": 55, "cv": 0.35,
-                "_basis": "assumed range sedentary->athletic; placeholder until multi-user data. Draw per user, then shape excursions and the intra-day burst regime from it.",
+                "_basis": "assumed range sedentary->athletic; placeholder until multi-user data.",
+            },
+            # #18: DECOMPOSE fitness out of the total between-person spread rather
+            # than stacking a shift on top (which would double-count, since
+            # between_person_spread already includes fitness variation) and was too
+            # weak to test the confounder. The core derives the per-efold magnitude
+            # and the residual spread from variance_share so the two components sum
+            # to exactly the literature total.
+            "fitness_effects": {
+                "source": "synthesized", "tag": "assumed",
+                "variance_share": 0.4,
+                "direction": {"RestingHeartRate": "down", "HeartRateVariabilitySDNN": "up"},
+                "_note": ("variance_share = fraction of each metric's TOTAL between-person VARIANCE "
+                          "attributed to fitness (residual = 1 - share). Core derives, with "
+                          "sigma_f = log-sigma of fitness_index and f = ln(index/median): "
+                          "per_efold = sqrt(share)*total_spread / sigma_f (sign from direction), "
+                          "residual_spread = sqrt(1-share)*total_spread. So fitness_var + "
+                          "residual_var = total_var exactly -- no double count. share=0.4 sized so "
+                          "a sedentary user and an athlete are DISTINGUISHABLE, not lost in the "
+                          "residual draw; ASSUMED (no decomposition study to hand)."),
             },
             "calibrated_sample_point": {
                 "source": "calibrated",
-                "_note": "ONE population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting sits near the assumed median.",
+                "_note": "ONE between-person population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting.",
                 "reading_quantiles_bpm": {"p5": val.get("p5"), "p50": val.get("p50"), "p95": val.get("p95")},
                 "peak_excursion_bpm_over_resting_approx": 62,
-                "daily_activity_level_sd": dm.get("sd"),
-                "daily_activity_lag1_autocorr": ac.get("coef"),
-                "daily_activity_lag1_autocorr_n_pairs": ac.get("n_pairs"),
             },
         },
     }
@@ -241,7 +293,7 @@ def main():
     enabled = [k for k, v in REGISTRY.items() if v["enabled"]]
 
     out = {
-        "schema_version": "0.3.0",
+        "schema_version": "0.5.0",
         "_schema": {
             "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
             "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -252,8 +304,10 @@ def main():
             "built": BUILD_DATE,
             "builder": "build_calibration.py",
             "sources": [{
-                "export_file": "Johan_Jul_26.xml",
-                "summary_file": args.summary_json,
+                # Source identified by a fake id only -- the real export/summary
+                # filenames (which carry the donor's name) are gitignored and never
+                # echoed into this committed artifact.
+                "source_id": "subject-001",
                 "export_date": s.get("export_date"),
                 "analysis_window": s.get("window"),
                 "window_days": s.get("window_days"),
@@ -348,9 +402,9 @@ def main():
     }
     out["physiology"]["SleepAnalysis"] = {
         "source": "synthesized", "enabled": False,
-        "stage_fractions_of_asleep": {"core": 0.50, "deep": 0.18, "rem": 0.22, "awake_in_bed": 0.10,
-                                       "_basis": "literature: adult architecture ~50% N1-N2(core), ~15-20% deep(N3), ~20-25% REM."},
-        "total_asleep_minutes": {"mean": 420, "sd": 55,
+        "stage_fractions_of_asleep": {"distribution": "dirichlet", "core": 0.50, "deep": 0.18, "rem": 0.22, "awake_in_bed": 0.10,
+                                       "_basis": "literature: adult architecture ~50% N1-N2(core), ~15-20% deep(N3), ~20-25% REM. Dirichlet keeps the four fractions summing to 1 when drawn per night."},
+        "total_asleep_minutes": {"distribution": "normal", "mean": 420, "sd": 55,
                                   "_basis": "literature: adult ~7h; observed p50 here is a consistency check."},
         "observed_sanity_check": {"asleep_min_per_staged_night_p50": (sl.get("total_asleep_minutes_per_staged_night") or {}).get("p50")},
     }

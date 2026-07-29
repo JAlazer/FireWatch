@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3.0",
+  "schema_version": "0.5.0",
   "_schema": {
     "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
     "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -11,8 +11,7 @@
     "builder": "build_calibration.py",
     "sources": [
       {
-        "export_file": "Johan_Jul_26.xml",
-        "summary_file": "johan_summary_12mo.json",
+        "source_id": "subject-001",
         "export_date": "2026-07-26 23:46:35 -0400",
         "analysis_window": [
           "2025-07-26",
@@ -234,29 +233,46 @@
       "_model": "emergent-from-resting-plus-activity",
       "_note": "Daily-mean HR is not a physiological trait; it mostly measures how much the person moved that day. HR has NO population centroid and NO between-person spread. Each HR reading emerges from the resting floor (RestingHeartRate) plus activity excursions. Raw-data view only, not a scored marker -- it just needs to look plausible.",
       "resting_floor_from": "RestingHeartRate",
-      "activity_level": {
-        "_note": "Per-user. Sets how far HR rises above resting (fitness/activity). This IS the cardiovascular-fitness confounder -- it must vary across users, not be fixed to the source.",
+      "within_person": {
+        "source": "calibrated",
+        "distribution": "normal",
+        "ar1_space": "linear",
+        "daily_activity_level_sd": 12.4677,
+        "daily_activity_lag1_autocorr": 0.2686,
+        "daily_activity_lag1_autocorr_n_pairs": 262,
+        "_scale_note": "absolute sd, linear AR(1). HR daily-mean CV is small (~0.14), so absolute vs cv barely differs -- same rationale as RHR.",
+        "_note": "how much one person's activity varies day to day; the only measured source for HR drift. Consumed when the HR model gains daily activity drift (v2)."
+      },
+      "fitness_index": {
+        "_note": "Per-user fitness proxy. Named for what it drives, not measured directly. In v1 it stands in for BOTH cardiorespiratory fitness (HR headroom) and activity volume -- distinct concepts collapsed for now. It is the cardiovascular-FITNESS confounder: it moves resting HR and HRV (see fitness_effects), not only HR excursions. It ALSO sets the HR excursion PEAK; note that in v1 the intra-day burst FREQUENCY and DURATION are NOT yet fitness-tied (a v1 simplification -- see device_behavior.HeartRate.intra_day_gap_seconds._regime, which references back here; reconcile in step 5).",
         "population": {
           "source": "synthesized",
           "tag": "assumed",
           "distribution": "lognormal",
-          "parameter": "peak_excursion_bpm_over_resting",
+          "parameter": "peak_hr_excursion_bpm_over_resting",
           "median": 55,
           "cv": 0.35,
-          "_basis": "assumed range sedentary->athletic; placeholder until multi-user data. Draw per user, then shape excursions and the intra-day burst regime from it."
+          "_basis": "assumed range sedentary->athletic; placeholder until multi-user data."
+        },
+        "fitness_effects": {
+          "source": "synthesized",
+          "tag": "assumed",
+          "variance_share": 0.4,
+          "direction": {
+            "RestingHeartRate": "down",
+            "HeartRateVariabilitySDNN": "up"
+          },
+          "_note": "variance_share = fraction of each metric's TOTAL between-person VARIANCE attributed to fitness (residual = 1 - share). Core derives, with sigma_f = log-sigma of fitness_index and f = ln(index/median): per_efold = sqrt(share)*total_spread / sigma_f (sign from direction), residual_spread = sqrt(1-share)*total_spread. So fitness_var + residual_var = total_var exactly -- no double count. share=0.4 sized so a sedentary user and an athlete are DISTINGUISHABLE, not lost in the residual draw; ASSUMED (no decomposition study to hand)."
         },
         "calibrated_sample_point": {
           "source": "calibrated",
-          "_note": "ONE population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting sits near the assumed median.",
+          "_note": "ONE between-person population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting.",
           "reading_quantiles_bpm": {
             "p5": 62.0,
             "p50": 90.0,
             "p95": 123.0
           },
-          "peak_excursion_bpm_over_resting_approx": 62,
-          "daily_activity_level_sd": 12.4677,
-          "daily_activity_lag1_autocorr": 0.2686,
-          "daily_activity_lag1_autocorr_n_pairs": 262
+          "peak_excursion_bpm_over_resting_approx": 62
         }
       }
     },
@@ -269,7 +285,10 @@
         "lag1_autocorr": 0.2002,
         "lag1_autocorr_n_pairs": 250,
         "_note": "day-to-day scatter of per-day means (intra-day scatter excluded), recent 12mo window.",
-        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual."
+        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual.",
+        "cv": 0.392,
+        "ar1_space": "log",
+        "_scale_note": "USE cv (geometric), not daily_mean_sd, so within-person spread scales with each user's median. AR(1) runs in log space."
       },
       "population_centroid": {
         "source": "synthesized",
@@ -314,7 +333,9 @@
         "lag1_autocorr": 0.2582,
         "lag1_autocorr_n_pairs": 247,
         "_note": "day-to-day scatter of per-day means (intra-day scatter excluded), recent 12mo window.",
-        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual."
+        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual.",
+        "ar1_space": "linear",
+        "_scale_note": "Absolute daily_mean_sd used directly (AR(1) in linear space). Deliberate for RHR: normal, narrow level range; CV scaling would barely differ."
       },
       "population_centroid": {
         "source": "synthesized",
@@ -330,7 +351,7 @@
           "60-69": 68,
           "70+": 67
         },
-        "_basis": "ASSUMED (no specific citation to hand -> `assumed`, not `literature`): adult resting HR mean ~70 bpm. Shape is a GENTLE MONOTONIC decline with age, consistent with Umetani 1998 (HR declines slowly with age); the earlier 70->72->70 mid-life hump had no cited basis and was removed. Population values, NOT from the source."
+        "_basis": "ASSUMED (no specific citation to hand -> `assumed`, not `literature`): adult resting HR mean ~70 bpm. Shape is a GENTLE MONOTONIC decline with age, consistent with Umetani 1998 (HR declines slowly with age); the earlier 70->72->70 mid-life hump had no cited basis and was removed. Population values, NOT from the source. NOTE: unlike HRV, RHR has no continuous model block -- the age curve is band-interpolated (avoids the discontinuity problem) but is therefore NOT revisable by changing one constant the way HRV's ref_age/slope are; edit the bands directly."
       },
       "between_person_spread": {
         "source": "synthesized",
@@ -381,13 +402,15 @@
       "source": "synthesized",
       "enabled": false,
       "stage_fractions_of_asleep": {
+        "distribution": "dirichlet",
         "core": 0.5,
         "deep": 0.18,
         "rem": 0.22,
         "awake_in_bed": 0.1,
-        "_basis": "literature: adult architecture ~50% N1-N2(core), ~15-20% deep(N3), ~20-25% REM."
+        "_basis": "literature: adult architecture ~50% N1-N2(core), ~15-20% deep(N3), ~20-25% REM. Dirichlet keeps the four fractions summing to 1 when drawn per night."
       },
       "total_asleep_minutes": {
+        "distribution": "normal",
         "mean": 420,
         "sd": 55,
         "_basis": "literature: adult ~7h; observed p50 here is a consistency check."
