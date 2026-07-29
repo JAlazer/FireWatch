@@ -108,7 +108,20 @@ function episodeFactor(profile: PhysiologyProfile, metricKey: string, dayMs: num
   return f;
 }
 
+/** Fail loudly on effect metric keys that don't match the registry: a mismatch
+ *  (e.g. passing a full HK identifier instead of the short key) would otherwise
+ *  silently no-op, which is exactly the bug that's hard to notice. */
+function validateEffectKeys(profile: PhysiologyProfile): void {
+  const keys = new Set<string>();
+  for (const s of profile.baselineShifts ?? []) keys.add(s.metric);
+  for (const c of profile.confounds ?? []) keys.add(c.metric);
+  for (const e of profile.episodes ?? []) for (const ef of e.effects) keys.add(ef.metric);
+  const unknown = [...keys].filter((k) => !(k in REGISTRY));
+  if (unknown.length) throw new Error(`Unknown effect metric key(s): ${unknown.join(", ")}. Use short registry keys (e.g. "HeartRateVariabilitySDNN"), not HK identifiers.`);
+}
+
 export function generate(profile: PhysiologyProfile, range: DateRange): GeneratedStore {
+  validateEffectKeys(profile);
   const base = new Rng(profile.seed);
   const fromMs = utcMidnight(Date.parse(range.from));
   const toMs = utcMidnight(Date.parse(range.to));
