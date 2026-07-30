@@ -277,6 +277,7 @@ def heart_rate_physiology(t):
                 "_note": "ONE between-person population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting.",
                 "reading_quantiles_bpm": {"p5": val.get("p5"), "p50": val.get("p50"), "p95": val.get("p95")},
                 "peak_excursion_bpm_over_resting_approx": 62,
+                "_sampling_bias": "These quantiles are SAMPLE-weighted, not time-weighted. Dense (~5s) sampling covers ~1.3% of waking time but ~55% of SAMPLES -- a ~42x over-representation of active periods. Time-weighted mean ~72 bpm vs sample-weighted ~90 (an 18 bpm gap purely from cadence). 'p50=90' means the WATCH REPORTS >90 for half its samples, NOT that HR is >90 half the time. Consistency check (no extra fitting): background ~72/SD8 -> low tail ~59 (obs p5 62); dense ~105/SD12 -> high tail ~125 (obs p95 123); 45% background -> p50 ~88-90 (obs 90).",
             },
         },
     }
@@ -293,7 +294,7 @@ def main():
     enabled = [k for k, v in REGISTRY.items() if v["enabled"]]
 
     out = {
-        "schema_version": "0.6.0",
+        "schema_version": "0.7.0",
         "_schema": {
             "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
             "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -387,8 +388,19 @@ def main():
     RECORDING = {
         "HeartRate": {
             "gate": "wear-only", "cadence": "two-regime",
-            "background_gap_s": 300, "burst_gap_s": 6,
-            "_note": "HR records whenever worn (no stillness gate). Burst CADENCE (~6s) is a DEVICE property (calibrated); burst FREQUENCY/how-often-active is a PERSON property from the activity model / fitness_index -- kept SEPARATE so the pooled window doesn't bake in this individual's exercise frequency as device behavior.",
+            "dense_gap_s": 5, "background_attempt_s": 300, "background_still_prob": 0.65,
+            "value_model": {
+                "process": "ornstein-uhlenbeck",
+                "hr_latent_tau_seconds": 60,
+                "hr_within_workout_latent_sd": 12,
+                "hr_still_latent_sd": 6,
+                "hr_sensor_noise_sd_bpm": 5.4,
+                "_note": "ONE latent HR process (OU, correlation time tau), sampled at regime cadence -> dense 5s gives rho=exp(-5/60)=0.92, background 300s gives rho=exp(-5)=0.007 (independent). Observed = latent + INDEPENDENT sensor noise: rho_obs = rho_L * sigmaL^2/(sigmaL^2+sigmaE^2) ~= 0.81 at 5s (do NOT set 0.9 on emitted samples directly). Background level drifts slowly (circadian) + residual -- not white noise. still_latent_sd=6 is DERIVED so observed still SD ~= sqrt(6^2+5.4^2) ~= 8.",
+                "_tau_basis": "assumed, not derived. Inverting rho=exp(-5/tau) for a plausible 3-6 bpm/5s successive-difference at exercise onset gives tau in [37,164]s; 60 sits inside. Real HR has multiple time constants (vagal ~1s, sympathetic peak 20-30s, post-exercise fast+slow phases) and RSA/Mayer periodicity a single-tau OU cannot reproduce -- documented simplification.",
+                "_workout_sd_basis": "assumed, NOT daily_activity_level_sd (12.47 is between-DAY scatter of daily means, an error to reuse here). The export gives only the MIXTURE spread (p5 62/p50 90/p95 123 -> ~18.5 across both regimes), not within-regime. 12 is a physiological estimate.",
+                "_sensor_basis": "assumed: Apple Watch HR ~6% MAPE; 6% of 90 = 5.4 bpm, applied as independent per-sample error (absolute; proportional may be more faithful).",
+            },
+            "_note": "Apple documents THREE HR modes: foreground/workout attempts every ~5s; background attempts every ~5min but REPORTS ONLY WHEN STILL; and periodic-while-walking (no published cadence). We model TWO -- dense 5s + background 300s-attempt with a stillness gate (background_still_prob); missed attempts stretch the effective interval so the observed gap SPREAD emerges rather than being hard-coded (300s nominal, ~420s effective p95 in the source). The walking mode is folded in as a simplification. Dense CADENCE (5s) and background attempt (300s) are DEVICE properties; dense FREQUENCY/duration is a PERSON property (activity model / fitness_index). Excursion PEAK stays bounded by activityLevel (fitness_index) -- UNTOUCHED.",
         },
         "HeartRateVariabilitySDNN": {
             "gate": "still-periods", "cadence": "poisson",

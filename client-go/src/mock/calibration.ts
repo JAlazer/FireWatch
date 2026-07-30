@@ -73,10 +73,17 @@ export interface WearModel {
 export interface Recording {
   gate: "wear-only" | "still-periods" | "daily-summary";
   cadence: "two-regime" | "poisson" | "none";
-  background_gap_s?: number;
-  burst_gap_s?: number;
+  dense_gap_s?: number;
+  background_attempt_s?: number;
+  background_still_prob?: number;
   day_gate_per_hour?: number;
   night_gate_per_hour?: number;
+  value_model?: {
+    hr_latent_tau_seconds: number;
+    hr_within_workout_latent_sd: number;
+    hr_still_latent_sd: number;
+    hr_sensor_noise_sd_bpm: number;
+  };
 }
 
 const calibration = raw as unknown as {

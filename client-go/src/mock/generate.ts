@@ -295,54 +295,68 @@ function emitHrvPoisson(rng: Rng, dayMs: number, hStart: number, hEnd: number, r
   }
 }
 
+interface HrValueModel { hr_latent_tau_seconds: number; hr_within_workout_latent_sd: number; hr_still_latent_sd: number; hr_sensor_noise_sd_bpm: number }
+interface HrRec { dense_gap_s?: number; background_attempt_s?: number; background_still_prob?: number; value_model?: HrValueModel }
+interface DenseWindow { s: number; e: number; frac: number }
+
+const DEFAULT_HR_VM: HrValueModel = { hr_latent_tau_seconds: 60, hr_within_workout_latent_sd: 12, hr_still_latent_sd: 6, hr_sensor_noise_sd_bpm: 5.4 };
+/** Slow circadian component (bpm), peaks ~16:00 -> background isn't white (point 6). */
+const circadian = (ms: number) => 4 * Math.sin((2 * Math.PI * (new Date(ms).getUTCHours() - 4)) / 24);
+
 /**
- * Daytime heart rate: two-regime. Background ~5min when still; ~6s bursts inside
- * activity windows. CRITICAL SEPARATION (#4): the burst CADENCE (rec.burst_gap_s,
- * ~6s) is a DEVICE property from calibration; how MANY/long the activity windows
- * are is a PERSON property derived from activityLevel here -- so pooling the
- * calibration window never bakes one person's exercise frequency into the device.
+ * Emit HR over [start, end] as ONE Ornstein-Uhlenbeck latent process sampled at
+ * regime cadence, plus INDEPENDENT sensor noise (two-stage). The exact discrete OU
+ * transition X <- mu + (X-mu)*e^{-dt/tau} + N(0, sigmaL^2(1-e^{-2dt/tau})) is
+ * applied at each sample time, so dense (5s) samples come out smooth (rho~0.92
+ * latent, ~0.81 observed) while background (300s) samples are ~independent -- both
+ * from ONE tau. mu tracks the regime (still vs workout) plus slow circadian drift.
+ * Excursion peak = resting + activityLevel*frac -> fitness_index UNTOUCHED.
  */
-function emitHeartRateDay(rng: Rng, day: number, restingFloor: number, activityLevel: number, rec: { background_gap_s?: number; burst_gap_s?: number }, push: (v: number, s: number, e: number) => void): void {
-  const wake = day + 7 * 3600_000;
-  const sleep = day + 23 * 3600_000;
-  const bg = (rec.background_gap_s ?? 300) * 1000;
-  const burst = (rec.burst_gap_s ?? 6) * 1000;
-  // Burst FREQUENCY from activity: median activity (~55) -> ~1 window/day.
-  const nWin = poissonInt(rng, Math.max(0, activityLevel / 55));
-  const windows: { s: number; e: number; peak: number }[] = [];
-  for (let i = 0; i < nWin; i++) {
-    const s = wake + rng.uniform(0, sleep - wake - 45 * 60_000);
-    const dur = rng.uniform(25, 50) * 60_000;
-    windows.push({ s, e: s + dur, peak: restingFloor + activityLevel * rng.uniform(0.7, 1) });
-  }
-  windows.sort((a, b) => a.s - b.s);
-  let t = wake;
-  while (t < sleep) {
-    const w = windows.find((win) => t >= win.s && t < win.e);
-    let hr: number;
-    let step: number;
-    if (w) {
-      const frac = (t - w.s) / (w.e - w.s);
-      hr = restingFloor + (w.peak - restingFloor) * Math.sin(Math.PI * frac) + rng.normal(0, 3);
-      step = burst;
+function emitHrOU(rng: Rng, start: number, end: number, restingFloor: number, activityLevel: number, stillOffset: number, windows: DenseWindow[], rec: HrRec, push: (v: number, s: number, e: number) => void): void {
+  const vm = rec.value_model ?? DEFAULT_HR_VM;
+  const dense = (rec.dense_gap_s ?? 5) * 1000;
+  const attempt = (rec.background_attempt_s ?? 300) * 1000;
+  const stillP = rec.background_still_prob ?? 0.65;
+  const winAt = (t: number) => windows.find((w) => t >= w.s && t < w.e);
+
+  // Sample times: dense 5s inside workout windows; 300s still-gated attempts elsewhere.
+  const times: number[] = [];
+  for (const w of windows) for (let t = w.s; t < w.e; t += dense + rng.int(-1000, 1000)) times.push(t);
+  for (let t = start; t < end; t += attempt + rng.int(-30_000, 30_000)) if (!winAt(t) && rng.next() < stillP) times.push(t);
+  times.sort((a, b) => a - b);
+
+  let x: number | null = null;
+  let prev = 0;
+  for (const t of times) {
+    const w = winAt(t);
+    const mu = restingFloor + circadian(t) + (w ? activityLevel * w.frac : stillOffset);
+    const sigmaL = w ? vm.hr_within_workout_latent_sd : vm.hr_still_latent_sd;
+    if (x === null) {
+      x = mu + rng.normal(0, sigmaL);
     } else {
-      hr = restingFloor + Math.max(0, rng.normal(18, 9)); // awake background
-      step = bg;
+      const a = Math.exp(-((t - prev) / 1000) / vm.hr_latent_tau_seconds);
+      x = mu + (x - mu) * a + rng.normal(0, sigmaL * Math.sqrt(Math.max(0, 1 - a * a)));
     }
-    push(Math.max(restingFloor - 2, hr), t, t);
-    t += step + rng.int(-2000, 2000);
+    prev = t;
+    push(Math.max(restingFloor - 6, x + rng.normal(0, vm.hr_sensor_noise_sd_bpm)), t, t); // + independent sensor noise
   }
 }
 
-/** Overnight heart rate: background only (asleep, still), near the resting floor.
- *  Window 23:00 -> 07:00 next day. No activity bursts. */
-function emitHeartRateNight(rng: Rng, day: number, restingFloor: number, rec: { background_gap_s?: number }, push: (v: number, s: number, e: number) => void): void {
-  const bg = (rec.background_gap_s ?? 300) * 1000;
-  const end = day + (24 + 7) * 3600_000; // 07:00 the next day
-  let t = day + 23 * 3600_000;
-  while (t < end) {
-    const hr = restingFloor + Math.max(-3, rng.normal(0, 3)); // asleep, near resting
-    push(Math.max(restingFloor - 3, hr), t, t);
-    t += bg + rng.int(-2000, 2000);
+/** Daytime HR: still (awake, +10) with brief workout windows (freq from activity). */
+function emitHeartRateDay(rng: Rng, day: number, restingFloor: number, activityLevel: number, rec: HrRec, push: (v: number, s: number, e: number) => void): void {
+  const wake = day + 7 * 3600_000;
+  const sleep = day + 23 * 3600_000;
+  const nWin = poissonInt(rng, Math.max(0, activityLevel / 55));
+  const windows: DenseWindow[] = [];
+  for (let i = 0; i < nWin; i++) {
+    const s = wake + rng.uniform(0, sleep - wake - 18 * 60_000);
+    windows.push({ s, e: s + rng.uniform(6, 18) * 60_000, frac: rng.uniform(0.6, 0.95) });
   }
+  windows.sort((a, b) => a.s - b.s);
+  emitHrOU(rng, wake, sleep, restingFloor, activityLevel, 10, windows, rec, push);
+}
+
+/** Overnight HR: asleep (still ~resting+1), no workouts. Supplies the low p5 tail. */
+function emitHeartRateNight(rng: Rng, day: number, restingFloor: number, rec: HrRec, push: (v: number, s: number, e: number) => void): void {
+  emitHrOU(rng, day + 23 * 3600_000, day + (24 + 7) * 3600_000, restingFloor, 0, 1, [], rec, push);
 }
