@@ -1,13 +1,18 @@
 // 6a console verification (the provider plumbing, no UI):
 //   npx tsx src/mock/appflow.check.ts
-// Completes onboarding -> persists -> "relaunches" (reloads + rebuilds provider) ->
-// logs samples per metric + score/level -> force-quit/relaunch gives IDENTICAL
-// output -> reset returns to onboarding. Uses an in-memory store (AsyncStorage is
-// native); the storage logic is adapter-agnostic so this exercises the real path.
+// Drives the REAL completion path (completeOnboarding: local save + fire-and-forget
+// server) WITH THE SERVER DOWN, then "relaunches" (reload + rebuild provider) and
+// checks the output is byte-identical, then resets. Uses an in-memory store
+// (AsyncStorage is native); the storage/completion logic is adapter-agnostic so
+// this exercises the real path.
+//
+// The server-DOWN case is the point: onboarding must complete locally even when the
+// dev server is unreachable (otherwise dev presets + this check couldn't run).
 
+import type { LifestyleProfileCreate } from "@/types/api";
 import { buildProvider } from "../providers/buildProvider";
-import { preset } from "../dev/presets";
-import { clearOnboarding, isOnboardingComplete, loadOnboarding, saveOnboarding, type KeyValueStore } from "../storage/onboardingStore";
+import { completeOnboarding } from "../onboarding/completeOnboarding";
+import { clearOnboarding, isOnboardingComplete, loadOnboarding, type KeyValueStore } from "../storage/onboardingStore";
 import { REGISTRY } from "./registry";
 import { scoreSeries } from "./score";
 
@@ -19,6 +24,20 @@ const HRV = REGISTRY.HeartRateVariabilitySDNN.identifier;
 const RHR = REGISTRY.RestingHeartRate.identifier;
 const HR = REGISTRY.HeartRate.identifier;
 
+// A healthy, steady survey answer set (server wire shape). 60d of history -> scored.
+const STEADY_LIFESTYLE: LifestyleProfileCreate = {
+  diet: "healthy",
+  has_autoimmune_condition: false,
+  smoking_status: "never",
+  alcohol_consumption: "light",
+  medications: [],
+  activity_level: "moderate",
+  perceived_stress_level: 3,
+  works_shift_work: false,
+  family_history_autoimmune: false,
+  currently_in_flare: false,
+};
+
 function memStore(): KeyValueStore {
   const m = new Map<string, string>();
   return { getItem: async (k) => m.get(k) ?? null, setItem: async (k, v) => void m.set(k, v), removeItem: async (k) => void m.delete(k) };
@@ -27,17 +46,28 @@ function memStore(): KeyValueStore {
 async function main() {
   const store = memStore();
 
-  // 1. complete onboarding — use the "steady" preset so there's enough history to score
-  const p = preset("steady", NOW);
-  const stored = await saveOnboarding(store, p.profile, { startDate: p.startDate });
-  console.log(`[complete] seed=${stored.seed} start=${stored.startDate.slice(0, 10)} isComplete=${await isOnboardingComplete(store)}`);
+  // 1. complete onboarding WITH THE SERVER DOWN. The server callback throws (as a
+  //    real ECONNREFUSED would); completion must still succeed via local save.
+  let serverAttempted = false;
+  const stored = await completeOnboarding(store, STEADY_LIFESTYLE, {
+    seed: "u-appflow-fixed", // fixed so relaunch is byte-identical (real app uses newSeed())
+    nowMs: NOW,
+    startDate: iso(NOW - 60 * DAY),
+    server: async () => {
+      serverAttempted = true;
+      throw new Error("ECONNREFUSED (dev server down)");
+    },
+  });
+  const completedDespiteServerDown = (await isOnboardingComplete(store)) && !!stored.seed;
+  console.log(`[complete] server attempted=${serverAttempted}, server FAILED, onboarding still complete=${completedDespiteServerDown}`);
+  console.log(`[complete] seed=${stored.seed} start=${stored.startDate.slice(0, 10)}`);
+  await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget rejection log settle
 
-  // a "launch": reload from storage, build the provider, query 30d + score today
+  // a "launch": reload from storage, build the provider, query history + score today
   async function launch() {
     const s = await loadOnboarding(store);
     if (!s) throw new Error("no persisted onboarding");
     const provider = buildProvider(s, { now });
-    // Fetch full history (scoring needs ~56d for the baseline), report last-30d counts.
     const opts = { from: new Date(Date.parse(s.startDate)), to: new Date(NOW + DAY) };
     const [hrv, rhr, hr] = await Promise.all([
       provider.queryQuantitySamples(HRV, opts),
@@ -64,8 +94,9 @@ async function main() {
   await clearOnboarding(store);
   console.log(`[reset] isComplete=${await isOnboardingComplete(store)}`);
 
-  console.log("\n" + (identical ? "6a CONSOLE VERIFICATION PASS ✅" : "FAIL ❌"));
-  process.exit(identical ? 0 : 1);
+  const pass = completedDespiteServerDown && identical;
+  console.log("\n" + (pass ? "6a CONSOLE VERIFICATION PASS ✅ (completed with server DOWN, deterministic across relaunch)" : "FAIL ❌"));
+  process.exit(pass ? 0 : 1);
 }
 
 main();
