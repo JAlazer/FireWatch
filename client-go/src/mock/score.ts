@@ -20,14 +20,17 @@ const DAY_MS = 86_400_000;
 export const SCORING = {
   ROLL_DAYS: 3, // rolling-average window
   BASELINE_MAX_DAYS: 56, // baseline window grows toward this as data accumulates
-  BASELINE_MIN_DAYS: 28, // need this many present days to exit calibrating
+  BASELINE_MIN_DAYS: 28, // this many present days -> full-confidence "scored"
+  BASELINE_PROVISIONAL_DAYS: 14, // 14..27 -> a "provisional" (low-confidence) estimate
   Z_THRESHOLD: 1.0, // per-signal directed-z to count as "concerning"
   EXIT_DAYS: 2, // consecutive days failing STAY before dropping out of elevated
 } as const;
 
 export interface ScoreResult {
   day: string;
-  status: "calibrating" | "scored";
+  // learning (<14d) -> "calibrating"; 14-27d -> "provisional" (estimate, low
+  // confidence); 28d+ -> "scored" (full confidence).
+  status: "calibrating" | "provisional" | "scored";
   level: number | null; // 1 (calm) .. 5; null while calibrating
   score: number | null; // continuous severity when elevated, else 0
   hrvZ: number | null; // directed z (positive = HRV dropped)
@@ -50,7 +53,7 @@ function median(xs: number[]): number {
 function dailyMeans(samples: QuantitySample[]): Map<number, number> {
   const acc = new Map<number, { sum: number; n: number }>();
   for (const s of samples) {
-    const d = Math.floor(Date.parse(s.startDate) / DAY_MS);
+    const d = Math.floor(s.startDate.getTime() / DAY_MS);
     const a = acc.get(d) ?? { sum: 0, n: 0 };
     a.sum += s.quantity;
     a.n += 1;
@@ -78,20 +81,21 @@ function rolling(daily: Map<number, number>, end: number): number | null {
  * null if fewer than BASELINE_MIN_DAYS days have a rolling value. Flagged days are
  * NOT excluded (that would make the baseline depend on the score).
  */
-function robustBaseline(daily: Map<number, number>, end: number): { center: number; scale: number } | null {
+function robustBaseline(daily: Map<number, number>, end: number): { center: number; scale: number; n: number } | null {
   const hi = end - SCORING.ROLL_DAYS;
   const rolls: number[] = [];
   for (let d = hi - SCORING.BASELINE_MAX_DAYS + 1; d <= hi; d++) {
     const r = rolling(daily, d);
     if (r != null) rolls.push(r);
   }
-  if (rolls.length < SCORING.BASELINE_MIN_DAYS) return null;
+  if (rolls.length < SCORING.BASELINE_PROVISIONAL_DAYS) return null; // <14d -> calibrating
   const center = median(rolls);
   const mad = median(rolls.map((r) => Math.abs(r - center)));
-  return { center, scale: 1.4826 * mad || 1e-9 };
+  return { center, scale: 1.4826 * mad || 1e-9, n: rolls.length };
 }
 
-/** Directed z for both signals on a given day (null z = that signal unavailable). */
+/** Directed z for both signals on a given day. `baselineDays` = min days behind the
+ *  two baselines (drives calibrating -> provisional -> scored). */
 function directedZ(hrvDaily: Map<number, number>, rhrDaily: Map<number, number>, end: number) {
   const hb = robustBaseline(hrvDaily, end);
   const rb = robustBaseline(rhrDaily, end);
@@ -100,6 +104,7 @@ function directedZ(hrvDaily: Map<number, number>, rhrDaily: Map<number, number>,
   const rhrNow = rolling(rhrDaily, end);
   return {
     ready: true as const,
+    baselineDays: Math.min(hb.n, rb.n),
     hrvZ: hrvNow == null ? null : (hb.center - hrvNow) / hb.scale, // HRV down -> positive
     rhrZ: rhrNow == null ? null : (rhrNow - rb.center) / rb.scale, // RHR up -> positive
   };
@@ -137,10 +142,11 @@ export function scoreSeries(hrvSamples: QuantitySample[], rhrSamples: QuantitySa
     if (!z.ready) {
       elevated = false;
       stale = 0;
-      out.push({ day: isoOfDay(d), status: "calibrating", level: null, score: null, hrvZ: null, rhrZ: null, elevated: false, reason: `baseline not ready (need >=${SCORING.BASELINE_MIN_DAYS}d for both signals)` });
+      out.push({ day: isoOfDay(d), status: "calibrating", level: null, score: null, hrvZ: null, rhrZ: null, elevated: false, reason: `learning your baseline (need >=${SCORING.BASELINE_PROVISIONAL_DAYS}d for both signals)` });
       continue;
     }
-    const { hrvZ, rhrZ } = z;
+    const { hrvZ, rhrZ, baselineDays } = z;
+    const provisional = baselineDays < SCORING.BASELINE_MIN_DAYS; // 14-27 days: low confidence
     const enter = concern(hrvZ) && concern(rhrZ);
     const stay = (concern(hrvZ) && !contradicts(rhrZ)) || (concern(rhrZ) && !contradicts(hrvZ));
 
@@ -159,9 +165,9 @@ export function scoreSeries(hrvSamples: QuantitySample[], rhrSamples: QuantitySa
 
     const severity = elevated ? Math.max(hrvZ ?? 0, rhrZ ?? 0) : 0;
     out.push({
-      day: isoOfDay(d), status: "scored", level: levelFor(elevated, severity), score: round(severity),
+      day: isoOfDay(d), status: provisional ? "provisional" : "scored", level: levelFor(elevated, severity), score: round(severity),
       hrvZ: hrvZ == null ? null : round(hrvZ), rhrZ: rhrZ == null ? null : round(rhrZ), elevated,
-      reason: `${reason} (HRV z=${hrvZ == null ? "-" : round(hrvZ)}, RHR z=${rhrZ == null ? "-" : round(rhrZ)})`,
+      reason: `${provisional ? "[provisional, low confidence] " : ""}${reason} (HRV z=${hrvZ == null ? "-" : round(hrvZ)}, RHR z=${rhrZ == null ? "-" : round(rhrZ)}, ${baselineDays}d baseline)`,
     });
   }
   return out;

@@ -60,7 +60,7 @@ export interface BetweenPersonSpread {
 
 export interface ChangeLog {
   retraction_rate: number;
-  backfill_event: { probability_per_generation: number; max_lag_days: number };
+  backfill_event: { events_per_year: number; max_lag_days: number };
 }
 
 /** Wear: night vs day, each with its own probability; then per-metric gates. */

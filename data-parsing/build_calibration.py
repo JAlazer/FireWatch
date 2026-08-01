@@ -294,7 +294,7 @@ def main():
     enabled = [k for k, v in REGISTRY.items() if v["enabled"]]
 
     out = {
-        "schema_version": "0.7.0",
+        "schema_version": "0.8.0",
         "_schema": {
             "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
             "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -359,8 +359,8 @@ def main():
             "retraction_rate": 0.005,
             "_retraction_basis": "assumed ~0.5% of samples later deleted (HealthKit deletes/duplicates happen). Placeholder.",
             "backfill_event": {
-                "probability_per_generation": 0.05, "max_lag_days": 30,
-                "_basis": "assumed: a rare device-restore backfill delivers old records at once. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one.",
+                "events_per_year": 0.05, "max_lag_days": 30,
+                "_basis": "assumed: a rare device-restore backfill delivers old records at once. Rate is PER YEAR (renamed from probability_per_generation, which is meaningless now that generation is range-invariant): each absolute day fires with prob events_per_year/365, evaluated deterministically from the seed; a max_lag_days buffer on both sides of the range keeps it range-independent. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one.",
             },
         },
         # Wear is night-vs-day, then a per-metric recording gate conditional on
