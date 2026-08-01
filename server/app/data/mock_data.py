@@ -1,166 +1,286 @@
-from dataclasses import dataclass
 
-
-@dataclass
-class Biometrics:
-    """
-    Biometrics are pieces of biological data that can be measured through use of a wearable smart device.
-    These include:
-     - heartRateVariability <- int
-     - restingHeartRate <- int
-     - respiratoryRate <- int
-     - bloodOxygenSaturation <- int
-     - skinTemperature <- int
-     - sleepTimeAverage <- int
-     - stepCount <- int
-     - activeEnergy <- int
-     - totalEnergy <- int
-    """
-    heartRateVariability: int
-    restingHeartRate: int
-    respiratoryRate: int
-    bloodOxygenSaturation: int
-    skinTemperature: int
-    sleepTimeAverage: float
-    stepCount: int
-    activeEnergy: int
-    totalEnergy: int
-
-
-@dataclass
-class Lifestyle:
-    """
-    A Lifestyle is made up of qualitative pieces of information about a user's lifestyle.
-    They are as follows:
-     - dietSentiment <- "Very Unhealthy" | "Unhealthy" | "Moderate" | "Healthy" | "Very Healthy" 
-     - hasAutoimmuneCondition <- boolean
-     - isASmoker <- boolean
-     - isAlcoholic <- boolean
-     - isStressed <- boolean
-    """
-    dietSentiment: str
-    hasAutoimmuneCondition: bool
-    isASmoker: bool
-    isAlcoholic: bool
-    isStressed: bool
-
-
-@dataclass
-class User:
-    """
-    A User is one who has:
-     - lifestyle <- Lifestyle
-     - biometrics <- Biometrics
-     - inflammationLevel <- int [1,5] 1 - no inflammation, and 5 - high inflammation
-    """
-    biometrics: Biometrics
-    lifestyle: Lifestyle
-    inflammationLevel: int
-
-
-# array of users as mock data
-mock_users = [
-    # --- Low inflammation (1) : healthy lifestyle, strong biometrics ---
-    User(
-        Biometrics(72, 54, 13, 98, 92, 8, 11200, 520, 2400),
-        Lifestyle("Very Healthy", False, False, False, False),
-        1
+import uuid
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+ 
+# ---------------------------------------------------------------------------
+# Deterministic UUID helper
+# ---------------------------------------------------------------------------
+# Using uuid5 (name-based) instead of uuid4 (random) so the mock dataset is
+# stable across test runs / restarts of the in-memory mock repositories,
+# without having to hardcode a wall of literal UUIDs.
+ 
+_NAMESPACE = uuid.NAMESPACE_DNS
+ 
+ 
+def _uid(*parts: str) -> str:
+    return str(uuid.uuid5(_NAMESPACE, ":".join(parts)))
+ 
+ 
+# ---------------------------------------------------------------------------
+# Shared reference date for the single seeded day of biometrics
+# ---------------------------------------------------------------------------
+ 
+MOCK_DAY: date = date(2026, 7, 30)
+ 
+ 
+def _at(hour: int, minute: int = 0) -> datetime:
+    """UTC timestamp on MOCK_DAY. Real data would carry the user's local tz."""
+    return datetime(
+        MOCK_DAY.year, MOCK_DAY.month, MOCK_DAY.day, hour, minute, tzinfo=timezone.utc
+    )
+ 
+ 
+# ---------------------------------------------------------------------------
+# USERS + LIFESTYLE
+# ---------------------------------------------------------------------------
+# Keyed by user_id (uuid string) so repositories can do MOCK_USERS[user_id]
+# lookups directly, same access pattern as the old mock_users.py.
+ 
+USER_ID_MAYA = _uid("user", "maya")
+USER_ID_JAMES = _uid("user", "james")
+USER_ID_SOFIA = _uid("user", "sofia")
+ 
+MOCK_USERS: dict[str, dict[str, Any]] = {
+    USER_ID_MAYA: {
+        "user": {
+            "id": USER_ID_MAYA,
+            "clerk_user_id": "user_2mockClerkMaya",
+            "email": "maya.chen@example.com",
+            "created_at": datetime(2025, 1, 15, 9, 0, 0, tzinfo=timezone.utc),
+        },
+        "lifestyle": {
+            "id": _uid("lifestyle", "maya"),
+            "user_id": USER_ID_MAYA,
+            "birth_date": date(1994, 6, 12),
+            "biological_sex": "female",
+            "stress_level": "low",
+            "smoking_frequency": "never",
+            "drinking_frequency": "never",
+            "diet": "moderate",  # placeholder, see module docstring
+            # Schema gap: not a real LIFESTYLE column in
+            # firewatch-schema.mermaid yet. See the has_autoimmune_condition
+            # comment in client types/api.ts for the open decision.
+            "has_autoimmune_condition": False,
+            "sick_types": [],
+            "med_types": [],
+            "tracked_markers": ["hrv", "resting_hr", "sleep_stage", "spo2"],
+            "healthkit_permissions": {
+                "hrv": True,
+                "resting_hr": True,
+                "spo2": True,
+                "body_temp": True,
+                "resp_rate": True,
+                "steps": True,
+                "sleep_stage": True,
+                "cycle_flow": True,
+                "cramps": False,
+            },
+            "updated_at": datetime(2025, 1, 15, 9, 5, 0, tzinfo=timezone.utc),
+        },
+    },
+    USER_ID_JAMES: {
+        "user": {
+            "id": USER_ID_JAMES,
+            "clerk_user_id": "user_2mockClerkJames",
+            "email": "james.okafor@example.com",
+            "created_at": datetime(2025, 2, 3, 14, 30, 0, tzinfo=timezone.utc),
+        },
+        "lifestyle": {
+            "id": _uid("lifestyle", "james"),
+            "user_id": USER_ID_JAMES,
+            "birth_date": date(1988, 11, 2),
+            "biological_sex": "male",
+            "stress_level": "high",
+            "smoking_frequency": "occasionally",
+            "drinking_frequency": "weekly",
+            "diet": "moderate",  # placeholder, see module docstring
+            "has_autoimmune_condition": False,  # schema gap, see Maya's entry above
+            "sick_types": ["seasonal_allergies"],
+            "med_types": ["ibuprofen"],
+            "tracked_markers": [
+                "hrv",
+                "resting_hr",
+                "resp_rate",
+                "sleep_stage",
+                "stress_level",
+            ],
+            "healthkit_permissions": {
+                "hrv": True,
+                "resting_hr": True,
+                "spo2": True,
+                "body_temp": False,
+                "resp_rate": True,
+                "steps": True,
+                "sleep_stage": True,
+                "cycle_flow": False,
+                "cramps": False,
+            },
+            "updated_at": datetime(2025, 2, 3, 14, 40, 0, tzinfo=timezone.utc),
+        },
+    },
+    USER_ID_SOFIA: {
+        "user": {
+            "id": USER_ID_SOFIA,
+            "clerk_user_id": "user_2mockClerkSofia",
+            "email": "sofia.reyes@example.com",
+            "created_at": datetime(2025, 3, 10, 11, 15, 0, tzinfo=timezone.utc),
+        },
+        "lifestyle": {
+            "id": _uid("lifestyle", "sofia"),
+            "user_id": USER_ID_SOFIA,
+            "birth_date": date(1991, 4, 27),
+            "biological_sex": "female",
+            "stress_level": "high",
+            "smoking_frequency": "daily",
+            "drinking_frequency": "daily",
+            "diet": "moderate",  # placeholder, see module docstring
+            "has_autoimmune_condition": True,  # schema gap, see Maya's entry above
+            "sick_types": ["rheumatoid_arthritis"],
+            "med_types": ["methotrexate", "prednisone"],
+            "tracked_markers": [
+                "hrv",
+                "resting_hr",
+                "resp_rate",
+                "spo2",
+                "sleep_stage",
+                "stress_level",
+                "autoimmune_flare",
+            ],
+            "healthkit_permissions": {
+                "hrv": True,
+                "resting_hr": True,
+                "spo2": True,
+                "body_temp": True,
+                "resp_rate": True,
+                "steps": True,
+                "sleep_stage": True,
+                "cycle_flow": True,
+                "cramps": True,
+            },
+            "updated_at": datetime(2025, 3, 10, 11, 20, 0, tzinfo=timezone.utc),
+        },
+    },
+}
+ 
+ 
+# ---------------------------------------------------------------------------
+# BIOMETRICS
+# ---------------------------------------------------------------------------
+# Flat list of individual samples — mirrors how rows actually land in the
+# hypertable. Each entry maps 1:1 to a BIOMETRICS row.
+#
+# `end_at` is None for point-in-time readings (hrv, resting_hr, spo2,
+# body_temp, resp_rate), matching the schema's "nullable for instantaneous
+# types" note. `steps` and `sleep_stage` are inherently windowed, so they
+# carry a real start_at/end_at span.
+ 
+ 
+def _sample(
+    user_id: str,
+    metric_type: str,
+    value: dict[str, Any],
+    start_at: datetime,
+    end_at: datetime | None,
+    received_at: datetime,
+    source: str = "healthkit",
+    deleted_at: datetime | None = None,
+    sample_suffix: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": _uid("biometric", user_id, metric_type, sample_suffix or start_at.isoformat()),
+        "user_id": user_id,
+        "healthkit_sample_uuid": _uid(
+            "hk-sample", user_id, metric_type, sample_suffix or start_at.isoformat()
+        ),
+        "metric_type": metric_type,
+        "value": value,
+        "start_at": start_at,
+        "end_at": end_at,
+        "received_at": received_at,
+        "deleted_at": deleted_at,
+        "source": source,
+    }
+ 
+ 
+MOCK_BIOMETRICS: list[dict[str, Any]] = [
+    # ---- Maya (healthy, low inflammation) ----
+    _sample(USER_ID_MAYA, "hrv", {"value": 72.4, "unit": "ms"}, _at(7, 15), None, _at(7, 17)),
+    _sample(USER_ID_MAYA, "resting_hr", {"value": 54, "unit": "count/min"}, _at(7, 15), None, _at(7, 17)),
+    _sample(USER_ID_MAYA, "spo2", {"value": 0.98, "unit": "%"}, _at(3, 0), None, _at(7, 17)),
+    _sample(USER_ID_MAYA, "body_temp", {"value": 33.6, "unit": "degC"}, _at(3, 0), None, _at(7, 17)),
+    _sample(USER_ID_MAYA, "resp_rate", {"value": 13.2, "unit": "count/min"}, _at(3, 0), None, _at(7, 17)),
+    _sample(
+        USER_ID_MAYA, "steps", {"value": 11200, "unit": "count"},
+        _at(0, 0), _at(23, 59), _at(23, 59),
     ),
-    User(
-        Biometrics(68, 56, 14, 97, 93, 7.8, 9800, 480, 2300),
-        Lifestyle("Healthy", False, False, False, False),
-        1
+    _sample(
+        USER_ID_MAYA, "sleep_stage", {"stage": "asleep_core", "unit": "stage"},
+        _at(0, 0), _at(2, 10), _at(7, 17), sample_suffix="segment_1",
     ),
-    User(
-        Biometrics(75, 52, 13, 98, 92, 8.2, 10500, 510, 2500),
-        Lifestyle("Very Healthy", False, False, False, False),
-        1
+    _sample(
+        USER_ID_MAYA, "sleep_stage", {"stage": "asleep_deep", "unit": "stage"},
+        _at(2, 10), _at(4, 0), _at(7, 17), sample_suffix="segment_2",
     ),
-
-    # --- Mild inflammation (2) : mostly healthy, one or two risk factors ---
-    User(
-        Biometrics(58, 62, 15, 96, 94, 7, 7600, 380, 2200),
-        Lifestyle("Healthy", False, False, False, True),
-        2
+    _sample(
+        USER_ID_MAYA, "sleep_stage", {"stage": "asleep_rem", "unit": "stage"},
+        _at(4, 0), _at(6, 30), _at(7, 17), sample_suffix="segment_3",
     ),
-    User(
-        Biometrics(55, 64, 16, 96, 94, 6.5, 6900, 340, 2150),
-        Lifestyle("Moderate", False, False, False, False),
-        2
+    # Soft-deleted duplicate — exercises the HealthKit "anchored query"
+    # delete/dedup path: a duplicate hrv sample synced twice, second one
+    # later marked deleted by the client.
+    _sample(
+        USER_ID_MAYA, "hrv", {"value": 72.4, "unit": "ms"}, _at(7, 15), None, _at(7, 18),
+        deleted_at=_at(8, 0), sample_suffix="duplicate",
     ),
-    User(
-        Biometrics(60, 61, 15, 97, 93, 7.2, 8100, 400, 2250),
-        Lifestyle("Moderate", True, False, False, False),
-        2
+ 
+    # ---- James (moderate risk, some inflammation drivers) ----
+    _sample(USER_ID_JAMES, "hrv", {"value": 38.1, "unit": "ms"}, _at(6, 45), None, _at(6, 50)),
+    # Watch battery died overnight — resting_hr entered manually instead.
+    _sample(
+        USER_ID_JAMES, "resting_hr", {"value": 74, "unit": "count/min"}, _at(6, 45), None,
+        _at(9, 0), source="manual",
     ),
-
-    # --- Moderate inflammation (3) : autoimmune condition and/or stress ---
-    User(
-        Biometrics(42, 70, 17, 95, 95, 6, 5200, 280, 2000),
-        Lifestyle("Moderate", True, False, False, True),
-        3
+    _sample(USER_ID_JAMES, "spo2", {"value": 0.95, "unit": "%"}, _at(2, 30), None, _at(6, 50)),
+    _sample(USER_ID_JAMES, "body_temp", {"value": 34.1, "unit": "degC"}, _at(2, 30), None, _at(6, 50)),
+    _sample(USER_ID_JAMES, "resp_rate", {"value": 17.0, "unit": "count/min"}, _at(2, 30), None, _at(6, 50)),
+    _sample(
+        USER_ID_JAMES, "steps", {"value": 4200, "unit": "count"},
+        _at(0, 0), _at(23, 59), _at(23, 59),
     ),
-    User(
-        Biometrics(45, 68, 17, 95, 95, 5.8, 4800, 260, 1950),
-        Lifestyle("Unhealthy", False, True, False, True),
-        3
+    _sample(
+        USER_ID_JAMES, "sleep_stage", {"stage": "asleep_core", "unit": "stage"},
+        _at(0, 30), _at(3, 0), _at(6, 50), sample_suffix="segment_1",
     ),
-    User(
-        Biometrics(40, 72, 18, 94, 96, 6.2, 5000, 270, 2050),
-        Lifestyle("Moderate", True, False, True, False),
-        3
+    _sample(
+        USER_ID_JAMES, "sleep_stage", {"stage": "awake", "unit": "stage"},
+        _at(3, 0), _at(3, 20), _at(6, 50), sample_suffix="segment_2",
     ),
-    User(
-        Biometrics(43, 69, 16, 95, 95, 5.5, 4600, 250, 1900),
-        Lifestyle("Unhealthy", True, False, False, False),
-        3
+    _sample(
+        USER_ID_JAMES, "sleep_stage", {"stage": "asleep_core", "unit": "stage"},
+        _at(3, 20), _at(5, 30), _at(6, 50), sample_suffix="segment_3",
     ),
-
-    # --- High inflammation (4) : multiple risk factors compounding ---
-    User(
-        Biometrics(30, 82, 19, 93, 97, 5, 3200, 190, 1800),
-        Lifestyle("Unhealthy", True, True, False, True),
-        4
+ 
+    # ---- Sofia (autoimmune, currently in flare, high inflammation) ----
+    _sample(USER_ID_SOFIA, "hrv", {"value": 18.3, "unit": "ms"}, _at(5, 50), None, _at(5, 55)),
+    _sample(USER_ID_SOFIA, "resting_hr", {"value": 88, "unit": "count/min"}, _at(5, 50), None, _at(5, 55)),
+    _sample(USER_ID_SOFIA, "spo2", {"value": 0.91, "unit": "%"}, _at(1, 45), None, _at(5, 55)),
+    _sample(USER_ID_SOFIA, "body_temp", {"value": 35.0, "unit": "degC"}, _at(1, 45), None, _at(5, 55)),
+    _sample(USER_ID_SOFIA, "resp_rate", {"value": 21.4, "unit": "count/min"}, _at(1, 45), None, _at(5, 55)),
+    _sample(
+        USER_ID_SOFIA, "steps", {"value": 1500, "unit": "count"},
+        _at(0, 0), _at(23, 59), _at(23, 59),
     ),
-    User(
-        Biometrics(28, 85, 20, 92, 97, 4.5, 2800, 170, 1750),
-        Lifestyle("Unhealthy", True, False, True, True),
-        4
+    _sample(
+        USER_ID_SOFIA, "sleep_stage", {"stage": "awake", "unit": "stage"},
+        _at(0, 0), _at(0, 45), _at(5, 55), sample_suffix="segment_1",
     ),
-    User(
-        Biometrics(32, 80, 19, 93, 97, 5.2, 3400, 200, 1850),
-        Lifestyle("Very Unhealthy", False, True, True, False),
-        4
+    _sample(
+        USER_ID_SOFIA, "sleep_stage", {"stage": "asleep_core", "unit": "stage"},
+        _at(0, 45), _at(2, 0), _at(5, 55), sample_suffix="segment_2",
     ),
-
-    # --- Very high inflammation (5) : severe compounding risk factors ---
-    User(
-        Biometrics(20, 92, 22, 90, 99, 4, 1800, 130, 1650),
-        Lifestyle("Very Unhealthy", True, True, True, True),
-        5
-    ),
-    User(
-        Biometrics(18, 95, 23, 89, 99, 3.8, 1500, 110, 1600),
-        Lifestyle("Very Unhealthy", True, True, True, True),
-        5
-    ),
-    User(
-        Biometrics(22, 90, 21, 91, 98, 4.3, 2000, 140, 1700),
-        Lifestyle("Very Unhealthy", True, False, True, True),
-        5
-    ),
-
-    # --- Edge cases: worth keeping in your test set ---
-    # Athletic build masking some inflammation risk (low RHR despite risk factors)
-    User(
-        Biometrics(50, 58, 15, 96, 95, 6.8, 12500, 650, 2600),
-        Lifestyle("Moderate", True, False, False, True),
-        3
-    ),
-    # Sedentary but otherwise clean lifestyle (low activity, no other risk factors)
-    User(
-        Biometrics(65, 60, 14, 97, 93, 7.5, 3000, 150, 2000),
-        Lifestyle("Healthy", False, False, False, False),
-        2
+    _sample(
+        USER_ID_SOFIA, "sleep_stage", {"stage": "awake", "unit": "stage"},
+        _at(2, 0), _at(2, 40), _at(5, 55), sample_suffix="segment_3",
     ),
 ]

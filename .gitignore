@@ -1,5 +1,6 @@
 # ---------- Secrets & environment ----------
 .env
+*.env
 .env.*
 !.env.example          # keep a template so teammates know what vars are needed
 

@@ -1,4 +1,3 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
@@ -15,6 +14,8 @@ import { STORAGE_KEY_USER_ID } from "@/constants/config";
 import { useHealthDataProviderContext } from "@/providers/HealthDataProviderContext";
 import { createLifestyle, createUser, saveBiometrics } from "@/services/api";
 import type { LifestyleProfileCreate } from "@/types/api";
+import { approximateBirthDate, mapDrinkingFrequency, mapSmokingFrequency, mapStressLevel } from "@/utils";
+import MarkerRow from "@/components/onboarding/MarkerRow";
 
 // Markers shown to everyone, regardless of what they picked on Screen 1.
 const ALWAYS_MARKERS = ["Heart rate variability", "Resting heart rate"];
@@ -33,7 +34,7 @@ const STRESS_MARKERS: Record<string, string[]> = {
 const SMOKE_MARKERS: Record<string, string[]> = {
   Occasionally: ["Respiratory rate"],
   Daily: ["Respiratory rate", "Blood oxygen"],
-  "Heavily (pack+/day)": ["Respiratory rate", "Blood oxygen", "Skin temperature"],
+  Heavily: ["Respiratory rate", "Blood oxygen", "Skin temperature"],
 };
 const DRINK_MARKERS: Record<string, string[]> = {
   Occasionally: ["Sleep"],
@@ -60,77 +61,23 @@ const MED_TYPE_MARKERS: Record<string, string[]> = {
 // HRV + Resting HR. Confirmed 2026-07 (kept after HRV/RHR became universal).
 const DEFAULT_MARKERS = ["Sleep", "Steps"];
 
-// --- Mapping this screen's answers onto LifestyleProfileCreate ---
-// The backend's fields are scales/enums (perceived_stress_level: 1-10,
-// smoking_status: never/former/current, alcohol_consumption: none/light/
-// moderate/heavy) that predate this simplified onboarding, so these
-// translate what's collected here into that shape.
-
-// Tiers map to a representative point on the 1-10 scale rather than a range,
-// since the backend only stores a single number.
-function mapStressLevel(level: string | null): number {
-  switch (level) {
-    case "Low":
-      return 3;
-    case "Moderate":
-      return 6;
-    case "High":
-      return 9;
-    default:
-      return 5; // no stress level given — neutral default
-  }
-}
-
-// This onboarding only asks "do you currently smoke, and how often" — it
-// can't distinguish a former smoker from someone who's never smoked, so "no"
-// maps to "never" rather than attempting to guess "former".
-function mapSmokingStatus(smokes: boolean): LifestyleProfileCreate["smoking_status"] {
-  return smokes ? "current" : "never";
-}
-
-// Frequency (occasionally/weekly/daily) stands in for the backend's
-// none/light/moderate/heavy scale.
-function mapAlcoholConsumption(
-  drinks: boolean,
-  frequency: string | null,
-): LifestyleProfileCreate["alcohol_consumption"] {
-  if (!drinks) return "none";
-  switch (frequency) {
-    case "Occasionally":
-      return "light";
-    case "Weekly":
-      return "moderate";
-    case "Daily":
-      return "heavy";
-    default:
-      return "light";
-  }
-}
-
-// The icon shown next to each possible marker.
-const MARKER_ICONS: Record<
-  string,
-  keyof typeof MaterialCommunityIcons.glyphMap
-> = {
-  "Heart rate variability": "heart-pulse",
-  "Resting heart rate": "heart-outline",
-  "Skin temperature": "thermometer",
-  "Respiratory rate": "lungs",
-  Sleep: "moon-waning-crescent",
-  "Blood oxygen": "water-percent",
-  Steps: "walk",
+// Stable marker codes, matching BIOMETRICS.metric_type in
+// firewatch-schema.mermaid — this is what actually gets persisted in
+// tracked_markers, decoupled from the UI's display labels above so a future
+// copy change doesn't change what's stored.
+const MARKER_CODES: Record<string, string> = {
+  "Heart rate variability": "hrv",
+  "Resting heart rate": "resting_hr",
+  "Skin temperature": "body_temp",
+  "Respiratory rate": "resp_rate",
+  Sleep: "sleep_stage",
+  "Blood oxygen": "spo2",
+  Steps: "steps",
 };
 
-// One non-interactive marker row (display only). `color` tints the icon:
-// neutral for the always markers, the app's accent for the personalized ones.
-function MarkerRow({ name, color }: { name: string; color: string }) {
-  return (
-    <View style={styles.markerRow}>
-      <MaterialCommunityIcons name={MARKER_ICONS[name]} size={22} color={color} />
-      <Text style={styles.markerText}>{name}</Text>
-    </View>
-  );
-}
+
+
+
 
 export default function Screen2() {
   const insets = useSafeAreaInsets();
@@ -138,11 +85,13 @@ export default function Screen2() {
   const provider = useHealthDataProviderContext();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-
-  // Everything carried over from Screen 1.
-  const { selected, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
+ 
+  // Everything carried over from Screen 1. `age` wasn't previously read here
+  // even though Screen 1 sent it — needed now for approximateBirthDate().
+  const { selected, age, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
     useLocalSearchParams<{
       selected?: string;
+      age?: string;
       stressLevel?: string;
       sickTypes?: string;
       medTypes?: string;
@@ -155,7 +104,7 @@ export default function Screen2() {
   const parsedMedTypes = (medTypes ?? "").split(",").filter(Boolean);
   const parsedSmokeTypes = (smokeTypes ?? "").split(",").filter(Boolean);
   const parsedDrinkTypes = (drinkTypes ?? "").split(",").filter(Boolean);
-
+ 
   // Build the "because of what you shared" markers — the deduplicated union
   // across every data point collected on Screen 1, not just the four flat
   // conditions from before. Each category only contributes if it actually
@@ -171,9 +120,16 @@ export default function Screen2() {
   parsedDrinkTypes.forEach((t) => DRINK_MARKERS[t]?.forEach((m) => union.add(m)));
   parsedSickTypes.forEach((t) => SICK_TYPE_MARKERS[t]?.forEach((m) => union.add(m)));
   parsedMedTypes.forEach((t) => MED_TYPE_MARKERS[t]?.forEach((m) => union.add(m)));
-
+ 
   const sharedMarkers = union.size > 0 ? [...union] : DEFAULT_MARKERS;
-
+ 
+  // Full set actually persisted to LIFESTYLE.tracked_markers — always
+  // markers plus whatever was earned above, deduped, converted to stable
+  // codes (see MARKER_CODES).
+  const trackedMarkerCodes = [...new Set([...ALWAYS_MARKERS, ...sharedMarkers])].map(
+    (m) => MARKER_CODES[m],
+  );
+ 
   // One combined caveat note for recent illness and/or flagged medications.
   const sick = chosen.has("sick");
   const meds = chosen.has("meds");
@@ -188,7 +144,7 @@ export default function Screen2() {
     caveat =
       "Heads up: a medication you flagged can change how heart-rate signals should be read. We'll keep that in mind.";
   }
-
+ 
   async function handleFinish() {
     setSubmitError(null);
     setSubmitting(true);
@@ -201,7 +157,7 @@ export default function Screen2() {
         name: "FireWatch User",
         email: "user@firewatch.app",
       });
-
+ 
       // A new user has no biometrics on record yet, and /inflammation 404s
       // without one. Pull the same "latest biometrics" the dashboard/
       // insights tabs already read from (currently MockHealthDataProvider's
@@ -210,34 +166,40 @@ export default function Screen2() {
       // inflammation score consistent with what those tabs show.
       const biometrics = await provider.getLatestBiometrics();
       await saveBiometrics(user.user_id, biometrics);
-
+ 
       const lifestylePayload: LifestyleProfileCreate = {
+        birth_date: approximateBirthDate(age),
+        // Not collected anywhere in this onboarding yet — no question or
+        // HealthKit read exists. Placeholder until one does, same pattern
+        // as `diet` below.
+        biological_sex: "not_applicable",
+        stress_level: mapStressLevel(parsedStressLevel),
+        smoking_frequency: mapSmokingFrequency(parsedSmokeTypes[0] ?? null),
+        drinking_frequency: mapDrinkingFrequency(parsedDrinkTypes[0] ?? null),
         // Not asked about in this onboarding yet — placeholder until there's
-        // a real diet question. "moderate" sits in the middle of the
-        // five-point scale so it doesn't skew the inflammation score toward
-        // either extreme in the meantime.
+        // a real diet question. DietSelector.tsx already exists and targets
+        // this exact type but isn't wired into either screen yet. "moderate"
+        // sits in the middle of the five-point scale so it doesn't skew the
+        // inflammation score toward either extreme in the meantime.
         diet: "moderate",
-        has_autoimmune_condition: chosen.has("autoimmune"),
-        smoking_status: mapSmokingStatus(chosen.has("smokes")),
-        alcohol_consumption: mapAlcoholConsumption(
-          chosen.has("drinks"),
-          parsedDrinkTypes[0] ?? null,
+        sick_types: parsedSickTypes,
+        med_types: parsedMedTypes,
+        tracked_markers: trackedMarkerCodes,
+        // Should eventually reflect the actual OS-level HealthKit
+        // authorization response (per signal), not be invented client-side.
+        // Defaulting every tracked signal to true as a placeholder.
+        healthkit_permissions: Object.fromEntries(
+          trackedMarkerCodes.map((code) => [code, true]),
         ),
-        medications: parsedMedTypes,
-        perceived_stress_level: mapStressLevel(parsedStressLevel),
-        // Not collected by this onboarding at all — defaulted until/unless
-        // a question gets added for these. Flagging rather than guessing
-        // silently: activity_level, works_shift_work,
-        // family_history_autoimmune, and currently_in_flare have no UI here.
-        activity_level: "moderate",
-        works_shift_work: false,
-        family_history_autoimmune: false,
-        currently_in_flare: false,
+        // Schema gap: firewatch-schema.mermaid's LIFESTYLE table has no
+        // column for this yet. See the comment on this field in
+        // types/api.ts for the reasoning and the open decision.
+        has_autoimmune_condition: chosen.has("autoimmune"),
       };
-
+ 
       await createLifestyle(user.user_id, lifestylePayload);
       await AsyncStorage.setItem(STORAGE_KEY_USER_ID, user.user_id);
-
+ 
       router.replace("/(tabs)/dashboard");
     } catch (err) {
       setSubmitError(
@@ -247,7 +209,7 @@ export default function Screen2() {
       setSubmitting(false);
     }
   }
-
+ 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView
@@ -258,7 +220,7 @@ export default function Screen2() {
         <Text style={styles.step}>Step 2 of 2</Text>
         <Text style={styles.heading}>We&apos;ll track these for you</Text>
         <Text style={styles.subtitle}>Based on what you shared.</Text>
-
+ 
         {/* ---- Always ---- */}
         <Text style={styles.label}>Always</Text>
         <View style={styles.list}>
@@ -266,7 +228,7 @@ export default function Screen2() {
             <MarkerRow key={m} name={m} color="#1A1A1A" />
           ))}
         </View>
-
+ 
         {/* ---- Because of what you shared ---- */}
         <Text style={styles.label}>Because of what you shared</Text>
         <View style={styles.list}>
@@ -274,14 +236,14 @@ export default function Screen2() {
             <MarkerRow key={m} name={m} color="#E55A4E" />
           ))}
         </View>
-
+ 
         {/* ---- Caveat note (not a marker row) ---- */}
         {caveat && (
           <View style={styles.caveat}>
             <Text style={styles.caveatText}>{caveat}</Text>
           </View>
         )}
-
+ 
         {/* ---- Submission error, if any ---- */}
         {submitError && (
           <View style={styles.errorBox}>
@@ -289,7 +251,7 @@ export default function Screen2() {
           </View>
         )}
       </ScrollView>
-
+ 
       {/* ---- Finish: persists onboarding data, then hands off to the tabs ---- */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
@@ -308,7 +270,8 @@ export default function Screen2() {
   );
 }
 
-const styles = StyleSheet.create({
+
+export const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F7F7F7" },
   scroll: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
 
