@@ -156,13 +156,13 @@ export default function Screen2() {
   let caveat: string | null = null;
   if (sick && meds) {
     caveat =
-      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged can change how heart-rate signals should be read. We'll keep both in mind.";
+      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged shapes your baseline heart-rate signals — your readings are taken on that medicated baseline, so we read them in that context. We'll keep both in mind.";
   } else if (sick) {
     caveat =
       "Heads up: a recent illness can make some of these readings noisier for a while. We'll keep that in mind.";
   } else if (meds) {
     caveat =
-      "Heads up: a medication you flagged can change how heart-rate signals should be read. We'll keep that in mind.";
+      "Heads up: a medication you flagged (like a beta-blocker) shapes your baseline heart-rate signals. Your readings are taken on that medicated baseline, so we read them in that context rather than as a distortion. We'll keep that in mind.";
   }
 
   async function handleFinish() {

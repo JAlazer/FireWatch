@@ -471,6 +471,25 @@ def main():
         "observed_sanity_check": {"asleep_min_per_staged_night_p50": (sl.get("total_asleep_minutes_per_staged_night") or {}).get("p50")},
     }
 
+    # Cross-metric coupling. Measured OUT OF BAND by correlate_hrv_rhr.py, because
+    # the summary input here does not retain the paired daily series needed for a
+    # within-person correlation. Value is the recent-12mo within-person Pearson r of
+    # daily-mean HRV vs daily RestingHeartRate; applied in the generator as the
+    # correlation of the two latent AR(1) innovations (negative -> low-HRV days are
+    # high-RHR days). See data-parsing/correlate_hrv_rhr.py to reproduce.
+    out["metric_coupling"] = {
+        "source": "calibrated",
+        "HeartRateVariabilitySDNN__RestingHeartRate": {
+            "innovation_corr": -0.51,
+            "daily_mean_corr": -0.513,
+            "daily_mean_corr_log_hrv": -0.529,
+            "detrended_corr_28d": -0.470,
+            "n_pairs": 262,
+            "window": "recent 12mo",
+            "_note": "Within-person r, daily-mean HRV(SDNN) vs daily RestingHeartRate; applied as the correlation of the two latent AR(1) innovations (preserves both marginals). Holds under 28d detrend, so not a slow common trend.",
+        },
+    }
+
     with open(args.out, "w") as f:
         json.dump(out, f, indent=2)
     print("Wrote %s" % args.out)

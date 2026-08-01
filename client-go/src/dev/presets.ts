@@ -1,69 +1,59 @@
-// DEV-ONLY presets: reach any dashboard state on demand. Guard usage with __DEV__
-// and keep this module easily strippable. Names align with the dashboard prototype's
-// five simulator states so we test what the screens were designed around.
+// DEV-ONLY fixtures for the dev screen (app/dev.tsx). TWO INDEPENDENT axes:
+//   - days of history -> backdate the profile's startDate, so buildProvider yields
+//     that much REAL generated history (not a faked UI state)
+//   - scenario        -> calm | flare | flare+beta_blocker
+// Guard usage with __DEV__ and keep this easily strippable.
 //
-// Exploits that generation is range-independent + deterministic: each preset just
-// backdates startDate (and, for elevated, plants a flare ending near "now") so the
-// same state reproduces every launch. A RESET clears the profile back to onboarding
-// (otherwise, once the completion gate exists, a finished onboarding can never be
-// re-entered to test Screen 1/2 changes without reinstalling the app).
+// Exploits range-independent + deterministic generation: a fixed per-scenario seed
+// plus a backdated startDate reproduces the same history every launch.
 
 import type { OnboardingProfile } from "../mock/mapping";
 
-export type PresetName = "learning" | "provisional" | "steady" | "elevated" | "confounded";
+export type DevScenario = "calm" | "flare" | "flare+beta_blocker";
 
-export interface PresetResult {
-  profile: OnboardingProfile;
-  startDate: string; // ISO — passed to saveOnboarding({ startDate })
-  note: string;
-}
+export const DAY_BUTTONS = [1, 7, 15, 20, 30, 60] as const;
+export const SCENARIOS: DevScenario[] = ["calm", "flare", "flare+beta_blocker"];
 
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
-// Birth date for a target age as-of `nowMs` (mapping derives age from birthDate).
 const birthDateForAge = (age: number, nowMs: number) =>
   new Date(Date.UTC(new Date(nowMs).getUTCFullYear() - age, 0, 1)).toISOString().slice(0, 10);
 
-/** Build a preset relative to a "now" (defaults to real now). */
-export function preset(name: PresetName, nowMs: number = Date.now()): PresetResult {
-  const seed = `dev-${name}`; // fixed so the preset is reproducible
-  const base: OnboardingProfile = { seed, birthDate: birthDateForAge(40, nowMs) };
-  const backdate = (days: number) => iso(nowMs - days * DAY);
+// A deliberately STRONG, ongoing flare so the elevated state is reliably reachable
+// for UI testing. A literature-magnitude flare (RHR ~1 SD) plus clip-to-now (today's
+// RHR arrives ~17h late) plus wear gaps sits right at the concordance threshold — so
+// it's only intermittently elevated. This over-drives it (HRV x0.68, RHR x1.15) and
+// spans "now" with margin, so recent days are solidly in-flare. HRV down + RHR up is
+// the inflammation direction.
+const FLARE_EFFECTS = [
+  { metric: "HeartRateVariabilitySDNN", factor: 0.68 },
+  { metric: "RestingHeartRate", factor: 1.15 },
+];
+const flareEpisode = (nowMs: number) => ({
+  from: iso(nowMs - 6 * DAY),
+  to: iso(nowMs + 20 * DAY),
+  kind: "flare",
+  effects: FLARE_EFFECTS,
+});
 
-  switch (name) {
-    case "learning":
-      return { profile: base, startDate: backdate(6), note: "~day 6 of 28 — no estimate shown yet" };
-    case "provisional":
-      // ~21 days so the baseline (which lags 3 days and drops ~10% to wear gaps)
-      // reliably clears the 14-day provisional floor without reaching 28 (scored).
-      return { profile: base, startDate: backdate(21), note: "~day 21 — provisional estimate, low confidence" };
-    case "steady":
-      return { profile: base, startDate: backdate(60), note: "28+ days, nothing elevated" };
-    case "elevated":
-      return {
-        profile: {
-          ...base, autoimmune: true,
-          // A deliberately STRONG, ongoing flare so the elevated state is reliably
-          // reachable for UI testing. A real literature-magnitude flare (RHR x1.086
-          // ~ 1 SD) plus clip-to-now (today's RHR arrives ~17h late) plus wear gaps
-          // sits right at the concordance threshold -- i.e. it's intermittently
-          // elevated, exactly the behavior documented in the scoring analysis. This
-          // dev fixture over-drives it (HRV x0.68, RHR x1.15) to force a clean state.
-          explicitEpisodes: [{
-            from: backdate(6), to: backdate(-20), kind: "flare",
-            effects: [{ metric: "HeartRateVariabilitySDNN", factor: 0.68 }, { metric: "RestingHeartRate", factor: 1.15 }],
-          }],
-        },
-        startDate: backdate(60),
-        note: "steady baseline + a flare ending near now",
-      };
-    case "confounded":
-      return {
-        profile: { ...base, medications: ["beta_blocker"] },
-        startDate: backdate(60),
-        note: "steady + beta-blocker confound (HRV up, RHR down; state unchanged)",
-      };
-  }
+/** ISO start date giving `days` of history as-of nowMs. */
+export function devStartDate(days: number, nowMs: number): string {
+  return iso(nowMs - days * DAY);
 }
 
-export const PRESET_NAMES: PresetName[] = ["learning", "provisional", "steady", "elevated", "confounded"];
+/** Build the profile for a scenario (seed fixed per scenario -> reproducible). */
+export function devProfile(scenario: DevScenario, nowMs: number): OnboardingProfile {
+  const base: OnboardingProfile = { seed: `dev-${scenario}`, birthDate: birthDateForAge(40, nowMs) };
+  if (scenario === "calm") return base;
+  const profile: OnboardingProfile = { ...base, explicitEpisodes: [flareEpisode(nowMs)] };
+  // beta-blocker (HRV UP, RHR DOWN) is a CONFOUND opposing the flare direction, so it
+  // can MASK a genuine flare — the app quietly reads "calm". The dangerous case.
+  if (scenario === "flare+beta_blocker") profile.medications = ["beta_blocker"];
+  return profile;
+}
+
+/** Infer the active scenario from a persisted profile (for the dev screen status). */
+export function scenarioOf(p: { explicitEpisodes?: unknown[]; medications?: string[] }): DevScenario {
+  if (!p.explicitEpisodes?.length) return "calm";
+  return p.medications?.includes("beta_blocker") ? "flare+beta_blocker" : "flare";
+}

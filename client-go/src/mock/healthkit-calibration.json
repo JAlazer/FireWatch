@@ -479,5 +479,17 @@
         "asleep_min_per_staged_night_p50": 392.25
       }
     }
+  },
+  "metric_coupling": {
+    "source": "calibrated",
+    "HeartRateVariabilitySDNN__RestingHeartRate": {
+      "innovation_corr": -0.51,
+      "daily_mean_corr": -0.513,
+      "daily_mean_corr_log_hrv": -0.529,
+      "detrended_corr_28d": -0.47,
+      "n_pairs": 262,
+      "window": "recent 12mo (2025-07-27..2026-07-26)",
+      "_note": "Within-person Pearson r, daily-mean HRV (SDNN) vs daily RestingHeartRate. Applied as the correlation of the two latent AR(1) INNOVATIONS (negative: low-HRV days coincide with high-RHR days -- shared parasympathetic drive; HRV is derived from RR intervals). Correlating innovations preserves both marginals. Holds under 28d detrend (-0.47), so it is not a slow common trend. Measured by data-parsing/correlate_hrv_rhr.py (build_calibration's summary input does not retain paired daily series)."
+    }
   }
 }

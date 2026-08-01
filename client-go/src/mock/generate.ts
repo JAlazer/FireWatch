@@ -9,7 +9,7 @@
 // models then read that latent value and add sensor/intra-day variation. Emitting
 // day-independent draws would jitter where real physiology trends.
 
-import { CHANGE_LOG, WEAR_MODEL, centroidForAge, deviceBehavior, physiology, recording } from "./calibration";
+import { CHANGE_LOG, WEAR_MODEL, centroidForAge, deviceBehavior, innovationCorr, physiology, recording } from "./calibration";
 import { REGISTRY } from "./registry";
 import { Rng, deterministicUuid } from "./rng";
 import { baselineFactor, confoundFactor, type PhysiologyProfile } from "./profile";
@@ -83,18 +83,24 @@ const AR1_LOOKBACK = 15; // phi^(2(L+1)) <= 2.5e-15 at the worst daily phi (0.35
  * phi=0.35, breaking the within-person SD the diff matches).
  * `marginalSigma` is in the working space (#17): log-space sigma for logSpace.
  */
-function latentSeries(base: Rng, metric: string, days: number[], level: number, marginalSigma: number, phi: number, logSpace: boolean, episode: (dayMs: number) => number): number[] {
-  const mu = logSpace ? Math.log(level) : level;
-  const norm = marginalSigma * Math.sqrt(Math.max(0, 1 - phi * phi));
-  const innovCache = new Map<number, number>();
-  const innov = (absDay: number): number => {
-    let v = innovCache.get(absDay);
+/** Memoized deterministic N(0,1) innovation stream keyed by absolute day. Extracted
+ *  so two metrics' innovations can be CORRELATED (see generate()) — the innovation is
+ *  the natural place, since correlating it leaves each marginal untouched. */
+function makeInnov(base: Rng, metric: string): (absDay: number) => number {
+  const cache = new Map<number, number>();
+  return (absDay: number): number => {
+    let v = cache.get(absDay);
     if (v === undefined) {
       v = base.fork(`innov:${metric}:${absDay}`).normalStd();
-      innovCache.set(absDay, v);
+      cache.set(absDay, v);
     }
     return v;
   };
+}
+
+function latentSeries(days: number[], level: number, marginalSigma: number, phi: number, logSpace: boolean, innov: (absDay: number) => number, episode: (dayMs: number) => number): number[] {
+  const mu = logSpace ? Math.log(level) : level;
+  const norm = marginalSigma * Math.sqrt(Math.max(0, 1 - phi * phi));
   return days.map((dayMs) => {
     const d = Math.floor(dayMs / DAY_MS);
     let sum = 0;
@@ -198,8 +204,17 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
   const traits = { userHrvMedian, userRhrLevel, activityLevel, producesVO2Max };
 
   // ---- latent daily series: ABSOLUTE-EPOCH, range-independent (property P5) ----
-  const hrvLatent = latentSeries(base, "hrv", days, userHrvMedian, cvToLogSigma(hrvP.within_person.cv), hrvP.within_person.lag1_autocorr, true, (dm) => episodeFactor(profile, "HeartRateVariabilitySDNN", dm));
-  const rhrLatent = latentSeries(base, "rhr", days, userRhrLevel, rhrP.within_person.daily_mean_sd, rhrP.within_person.lag1_autocorr, false, (dm) => episodeFactor(profile, "RestingHeartRate", dm));
+  // HRV and RHR co-move (shared parasympathetic drive; HRV is derived from RR
+  // intervals). Correlate their latent AR(1) INNOVATIONS with the calibrated negative
+  // rho: RHR's innovation = rho*z_hrv + sqrt(1-rho^2)*z_rhr, which stays N(0,1) so
+  // both marginals are untouched, but a low-HRV day now tends to be a high-RHR day.
+  const rho = innovationCorr("HeartRateVariabilitySDNN", "RestingHeartRate");
+  const innovHrv = makeInnov(base, "hrv");
+  const innovRhrOwn = makeInnov(base, "rhr");
+  const co = Math.sqrt(Math.max(0, 1 - rho * rho));
+  const innovRhr = (absDay: number) => rho * innovHrv(absDay) + co * innovRhrOwn(absDay);
+  const hrvLatent = latentSeries(days, userHrvMedian, cvToLogSigma(hrvP.within_person.cv), hrvP.within_person.lag1_autocorr, true, innovHrv, (dm) => episodeFactor(profile, "HeartRateVariabilitySDNN", dm));
+  const rhrLatent = latentSeries(days, userRhrLevel, rhrP.within_person.daily_mean_sd, rhrP.within_person.lag1_autocorr, false, innovRhr, (dm) => episodeFactor(profile, "RestingHeartRate", dm));
 
   // ---- wear: night vs day, per ABSOLUTE day so it's range-independent ----
   // TODO(streakiness): independent per-day/night draws can't reproduce the ~2-month

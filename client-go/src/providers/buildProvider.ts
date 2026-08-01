@@ -21,6 +21,6 @@ export function buildProvider(onboarding: StoredOnboarding, opts?: { now?: () =>
     from: new Date(Date.parse(onboarding.startDate)).toISOString(),
     to: new Date(now() + DAY).toISOString(), // +1 day so "today" is in-window
   };
-  const physiology = toPhysiologyProfile(onboarding, range);
+  const physiology = toPhysiologyProfile(onboarding, range, now()); // age as-of the injected clock
   return new MockHealthDataProvider(physiology, range, { now });
 }
