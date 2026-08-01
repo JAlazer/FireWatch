@@ -32,7 +32,11 @@ export type Medication = "beta_blocker" | "steroid";
 /** The onboarding answers (mirrors the Screen 1 survey the client collects). */
 export interface OnboardingProfile {
   seed: string;
-  age: number;
+  // Canonical is BIRTH DATE, not age: a stored age silently rots (the person ages,
+  // the number doesn't). Age is DERIVED where the mapping needs a number (see
+  // ageOn / toPhysiologyProfile). Sourced from HealthKit DOB, else a DOB picker;
+  // today it's approximated from the onboarding age wheel.
+  birthDate: ISODate;
   activityLevel?: number; // optional fitness override (not collected in onboarding v1)
   autoimmune?: boolean;
   stressed?: boolean;
@@ -145,6 +149,19 @@ function flareDurationDays(rng: Rng): number {
   return rng.int(14, 21);
 }
 
+/** Whole-year age at `asOfMs` from an ISO birth date. Age is DERIVED (never stored)
+ *  so it can't rot: the same birth date yields a larger age next year. Resolved to
+ *  a number ONCE per provider build (baked into the generated store), so this never
+ *  threatens range-independence. */
+export function ageOn(birthDate: ISODate, asOfMs: number): number {
+  const b = new Date(Date.parse(birthDate));
+  const a = new Date(asOfMs);
+  let age = a.getUTCFullYear() - b.getUTCFullYear();
+  const m = a.getUTCMonth() - b.getUTCMonth();
+  if (m < 0 || (m === 0 && a.getUTCDate() < b.getUTCDate())) age--;
+  return age;
+}
+
 const addDays = (iso: ISODate, n: number): ISODate => new Date(Date.parse(iso) + n * DAY_MS).toISOString();
 const rangeDays = (r: DateRange) => Math.max(1, Math.round((Date.parse(r.to) - Date.parse(r.from)) / DAY_MS));
 
@@ -209,5 +226,9 @@ export function toPhysiologyProfile(o: OnboardingProfile, range: DateRange): Phy
   if (o.recentIllness) episodes.push(illnessEpisode(o, range));
   if (o.explicitEpisodes) episodes.push(...o.explicitEpisodes);
 
-  return { seed: o.seed, age: o.age, activityLevel: o.activityLevel, baselineShifts, episodes, confounds };
+  // Resolve age ONCE, as-of the range end (buildProvider sets range.to = now+1d),
+  // and carry birthDate through for an accurate getDateOfBirth. The generator only
+  // ever reads the resolved number, so range-independence is unaffected.
+  const age = ageOn(o.birthDate, Date.parse(range.to));
+  return { seed: o.seed, age, birthDate: o.birthDate, activityLevel: o.activityLevel, baselineShifts, episodes, confounds };
 }

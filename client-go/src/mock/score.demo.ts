@@ -16,6 +16,9 @@ const FROM = "2026-01-01T00:00:00Z";
 const range = { from: FROM, to: addDays(FROM, 160) };
 const FLARE_START = 90;
 const FLARE_END = 105;
+// Birth date that yields ~`age` when derived as-of the range end (mapping resolves
+// age from birthDate now, not a stored number).
+const bd = (age: number) => `${new Date(Date.parse(range.to)).getUTCFullYear() - age}-01-01`;
 
 async function samples(onboarding: OnboardingProfile) {
   const p = new MockHealthDataProvider(toPhysiologyProfile(onboarding, range), range, { now: () => Date.parse(range.to) + 60 * DAY });
@@ -26,7 +29,7 @@ async function samples(onboarding: OnboardingProfile) {
 async function main() {
   // ---- 1. flare detection + level sequence ----
   const flareUser: OnboardingProfile = {
-    seed: "score-demo", age: 40, autoimmune: true,
+    seed: "score-demo", birthDate: bd(40), autoimmune: true,
     explicitEpisodes: [{ from: addDays(FROM, FLARE_START), to: addDays(FROM, FLARE_END), kind: "flare",
       effects: [{ metric: "HeartRateVariabilitySDNN", factor: 0.749 }, { metric: "RestingHeartRate", factor: 1.086 }] }],
   };
@@ -62,7 +65,7 @@ async function main() {
   let scoredDays = 0, elevatedDays = 0;
   const N = 25;
   for (let i = 0; i < N; i++) {
-    const s = await samples({ seed: `fa-${i}`, age: 30 + i });
+    const s = await samples({ seed: `fa-${i}`, birthDate: bd(30 + i) });
     for (const r of scoreSeries(s.hrv, s.rhr, addDays(FROM, 40), addDays(FROM, 150))) {
       if (r.status === "scored") { scoredDays++; if (r.elevated) elevatedDays++; }
     }

@@ -9,9 +9,9 @@
 // The server-DOWN case is the point: onboarding must complete locally even when the
 // dev server is unreachable (otherwise dev presets + this check couldn't run).
 
-import type { LifestyleProfileCreate } from "@/types/api";
 import { buildProvider } from "../providers/buildProvider";
 import { completeOnboarding } from "../onboarding/completeOnboarding";
+import { rawToOnboarding, type RawOnboardingAnswers } from "../onboarding/projections";
 import { clearOnboarding, isOnboardingComplete, loadOnboarding, type KeyValueStore } from "../storage/onboardingStore";
 import { REGISTRY } from "./registry";
 import { scoreSeries } from "./score";
@@ -24,18 +24,16 @@ const HRV = REGISTRY.HeartRateVariabilitySDNN.identifier;
 const RHR = REGISTRY.RestingHeartRate.identifier;
 const HR = REGISTRY.HeartRate.identifier;
 
-// A healthy, steady survey answer set (server wire shape). 60d of history -> scored.
-const STEADY_LIFESTYLE: LifestyleProfileCreate = {
-  diet: "healthy",
-  has_autoimmune_condition: false,
-  smoking_status: "never",
-  alcohol_consumption: "light",
-  medications: [],
-  activity_level: "moderate",
-  perceived_stress_level: 3,
-  works_shift_work: false,
-  family_history_autoimmune: false,
-  currently_in_flare: false,
+// A healthy, steady survey answer set (raw onboarding shape). 60d of history -> scored.
+const STEADY_RAW: RawOnboardingAnswers = {
+  birthDate: "1986-01-01", // ~age 40 as-of the fixed NOW
+  autoimmune: false,
+  stressLevel: "Low",
+  smokes: false,
+  drinks: false,
+  drinkFrequency: null,
+  sickTypes: [],
+  medTypes: [],
 };
 
 function memStore(): KeyValueStore {
@@ -49,9 +47,8 @@ async function main() {
   // 1. complete onboarding WITH THE SERVER DOWN. The server callback throws (as a
   //    real ECONNREFUSED would); completion must still succeed via local save.
   let serverAttempted = false;
-  const stored = await completeOnboarding(store, STEADY_LIFESTYLE, {
-    seed: "u-appflow-fixed", // fixed so relaunch is byte-identical (real app uses newSeed())
-    nowMs: NOW,
+  const profile = rawToOnboarding(STEADY_RAW, { seed: "u-appflow-fixed" }); // fixed seed -> byte-identical relaunch (real app uses newSeed())
+  const stored = await completeOnboarding(store, profile, {
     startDate: iso(NOW - 60 * DAY),
     server: async () => {
       serverAttempted = true;

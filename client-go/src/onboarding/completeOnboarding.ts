@@ -14,15 +14,16 @@
 // generator runs on-device. With real HealthKit the client wouldn't need the
 // profile locally (HealthKit supplies data regardless; the profile matters only
 // server-side for scoring). This dependency disappears when real HealthKit lands.
+//
+// The caller supplies the CANONICAL profile already (see projections.rawToOnboarding)
+// and, separately, the fire-and-forget server thunk — this module stays agnostic to
+// both the raw answers and the wire format.
 
-import type { LifestyleProfileCreate } from "@/types/api";
-import { lifestyleToOnboarding } from "./lifestyleAdapter";
+import type { OnboardingProfile } from "../mock/mapping";
 import { saveOnboarding, type KeyValueStore, type StoredOnboarding } from "../storage/onboardingStore";
 
 export interface CompleteOnboardingOpts {
-  seed: string; // stable per-user seed (generate once with newSeed())
-  age?: number;
-  nowMs?: number;
+  userId?: string; // per-user storage key (defaults to the placeholder identity)
   startDate?: string; // history start; defaults to completion time
   /** Fire-and-forget server sync. Runs AFTER local save; a rejection is logged, never thrown. */
   server?: () => Promise<void>;
@@ -30,12 +31,11 @@ export interface CompleteOnboardingOpts {
 
 export async function completeOnboarding(
   store: KeyValueStore,
-  lifestyle: LifestyleProfileCreate,
-  opts: CompleteOnboardingOpts,
+  profile: OnboardingProfile,
+  opts?: CompleteOnboardingOpts,
 ): Promise<StoredOnboarding> {
-  const profile = lifestyleToOnboarding(lifestyle, { seed: opts.seed, age: opts.age, nowMs: opts.nowMs });
-  const stored = await saveOnboarding(store, profile, { startDate: opts.startDate }); // local = source of truth
-  if (opts.server) {
+  const stored = await saveOnboarding(store, profile, { startDate: opts?.startDate, userId: opts?.userId }); // local = source of truth
+  if (opts?.server) {
     // NB: intentionally NOT awaited — server failure must not block completion.
     void opts.server().catch((e) =>
       console.warn("[onboarding] server sync failed (non-blocking, local is source of truth):", e instanceof Error ? e.message : e),

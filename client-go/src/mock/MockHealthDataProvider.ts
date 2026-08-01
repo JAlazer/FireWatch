@@ -36,6 +36,9 @@ export class MockHealthDataProvider implements HealthDataProvider {
 
   /** Approx DOB = Jan 1 of (this year - age). */
   async getDateOfBirth(): Promise<Date> {
+    // Prefer the real birth date; fall back to a Jan-1 approximation from the
+    // resolved age only when no birthDate was carried (e.g. determinism fixtures).
+    if (this.store.profile.birthDate) return new Date(Date.parse(this.store.profile.birthDate));
     const year = new Date(this.now()).getUTCFullYear() - this.store.profile.age;
     return new Date(Date.UTC(year, 0, 1));
   }

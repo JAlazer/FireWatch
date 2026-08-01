@@ -20,11 +20,14 @@ export interface PresetResult {
 
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
+// Birth date for a target age as-of `nowMs` (mapping derives age from birthDate).
+const birthDateForAge = (age: number, nowMs: number) =>
+  new Date(Date.UTC(new Date(nowMs).getUTCFullYear() - age, 0, 1)).toISOString().slice(0, 10);
 
 /** Build a preset relative to a "now" (defaults to real now). */
 export function preset(name: PresetName, nowMs: number = Date.now()): PresetResult {
   const seed = `dev-${name}`; // fixed so the preset is reproducible
-  const base: OnboardingProfile = { seed, age: 40 };
+  const base: OnboardingProfile = { seed, birthDate: birthDateForAge(40, nowMs) };
   const backdate = (days: number) => iso(nowMs - days * DAY);
 
   switch (name) {
