@@ -1,0 +1,483 @@
+{
+  "schema_version": "0.7.0",
+  "_schema": {
+    "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
+    "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
+    "distribution": "the family a physiology parameter is drawn from ('lognormal', 'normal', ...). Present on every physiology draw so the core never guesses.",
+    "_note_fields": "keys beginning with '_' are human documentation, not machine parameters."
+  },
+  "provenance": {
+    "built": "2026-07-28",
+    "builder": "build_calibration.py",
+    "sources": [
+      {
+        "source_id": "subject-001",
+        "export_date": "2026-07-26 23:46:35 -0400",
+        "analysis_window": [
+          "2025-07-26",
+          "2026-07-26"
+        ],
+        "window_days": 366,
+        "records_in_window": 430950,
+        "n_individuals": 1,
+        "reference_age": 21,
+        "device_hardware": "Watch4 (Apple Watch Series 4, 2018)",
+        "device_software": "watchOS 10.6.1 -> 10.6.2",
+        "reference_status": "NOT a healthy-baseline reference"
+      }
+    ],
+    "_device_era_caveat": "device_behavior is calibrated from a Watch4 (2018 hardware) on watchOS 10.6 -- a device capped at watchOS 10, i.e. OLD hardware running recent software. Our users will largely be on NEWER watches whose sampling algorithms (cadence, gating, arrival timing) differ. This is a LARGER extrapolation than the window question below and the biggest single caveat on device_behavior. Re-calibrate when a newer-device export is available.",
+    "_window_decision": "KEEP POOLED 12-month window. Evidence: a single hardware id (Watch4) appears throughout the window (the Jan-Feb 2026 gap is the same watch not worn, then resumed) -- so there is NO device era to separate. The HR intra-day cadence shift (6s->159s pooled vs post-gap) is ACTIVITY-driven on one device (workout bursts, more exercise pre-gap), not a device blend; pooling actually preserves the burst regime a post-gap-only basis would under-represent. The RespiratoryRate/Sleep onsets (Mar/Jun 2026) are a settings/overnight-wear change on the same capable device, not new capability.",
+    "_calibration_caveat": "n=1. device_behavior is CALIBRATED from one person's Watch (its algorithms, wearer-independent). physiology population centroids/spreads are literature/assumed and are NOT anchored on this individual -- two independent reasons: the source is a single ~21yo, AND is not a healthy-baseline reference. On the APPLE (device) scale, the source's calibrated HRV daily median (~47ms) lands almost exactly on his own age band (~47). The earlier 'sits below his band' reading was an artifact of comparing Apple-scale data to ECG-scale norms (~8.3ms offset), not evidence about him -- he is unremarkable on device-scale norms, NOT high and NOT low. within-person daily sd and lag-1 autocorrelation stay `calibrated` but may include state-driven excursions and likely overstate variability for an unaffected individual. No flare/episode periods were identified or extracted (no labels; inferring them from the signal we model would be circular). Adding exports: POOL device_behavior, WIDEN physiology.",
+    "_privacy": "Source described technically only; no clinical detail recorded in this committed file."
+  },
+  "change_log": {
+    "source": "synthesized",
+    "retraction_rate": 0.005,
+    "_retraction_basis": "assumed ~0.5% of samples later deleted (HealthKit deletes/duplicates happen). Placeholder.",
+    "backfill_event": {
+      "probability_per_generation": 0.05,
+      "max_lag_days": 30,
+      "_basis": "assumed: a rare device-restore backfill delivers old records at once. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one."
+    }
+  },
+  "wear_model": {
+    "day": {
+      "source": "assumed",
+      "hours": [
+        7,
+        23
+      ],
+      "wear_prob": 0.9,
+      "_basis": "assumed; recent steady daytime wear ~90%. The pooled 75% coverage is a ~2-month-outage (Dec2025-Feb2026) artifact, not the typical rate."
+    },
+    "night": {
+      "source": "assumed",
+      "model": "per-night-bernoulli",
+      "hours": [
+        23,
+        7
+      ],
+      "wear_prob": 0.4,
+      "_basis": "assumed and UNSTABLE -- NOT a measured rate. Overnight-wear proxy (RespiratoryRate presence) by block is 0,0,0,0,0,0,0,0,46,29,0,0,43,100 (%); the last is a 2-day stub and two May blocks are 0 between 29 and 43. ~0.40 is a rough recent central value. Whole sleep window covered or none."
+    },
+    "streakiness": {
+      "todo": true,
+      "_note": "TODO: a 2-state (worn/not) run-length model to reproduce the Dec2025-Feb2026 ~2-month outage. Independent per-night/day Bernoulli scatters missing days evenly and cannot produce a multi-week gap. Deferred as the largest change."
+    }
+  },
+  "device_behavior": {
+    "HeartRate": {
+      "source": "calibrated",
+      "wear": {
+        "coverage_pct": 74.9,
+        "model": "per-day-bernoulli",
+        "_note": "days present / window days (recent 12mo); refine to run-length missing-day model later."
+      },
+      "records_per_day": {
+        "p50": 272.5,
+        "p95": 917.95,
+        "mean": 367.3321
+      },
+      "intra_day_gap_seconds": {
+        "p50": 6.0,
+        "p95": 420.0,
+        "_regime": "BIMODAL, single source (verified: one sourceName). p50 ~6-7s is workout burst sampling; p95 ~7min is the still/background regime. Model as two modes (background ~5min when still + burst seconds during activity), burst driven by the activity model (see physiology.HeartRate), NOT one distribution."
+      },
+      "sample_duration_seconds": {
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "arrival_lag_seconds": {
+        "p50": 5.0,
+        "p90": 319.0,
+        "p95": 414.0
+      },
+      "hour_of_day": "EMERGENT: not a fixed per-hour array. Activity-driven; a stored weight array would bake in the source's personal schedule (his morning-workout spike + evening activity). Timing comes from the activity model instead.",
+      "recording": {
+        "gate": "wear-only",
+        "cadence": "two-regime",
+        "dense_gap_s": 5,
+        "background_attempt_s": 300,
+        "background_still_prob": 0.65,
+        "value_model": {
+          "process": "ornstein-uhlenbeck",
+          "hr_latent_tau_seconds": 60,
+          "hr_within_workout_latent_sd": 12,
+          "hr_still_latent_sd": 6,
+          "hr_sensor_noise_sd_bpm": 5.4,
+          "_note": "ONE latent HR process (OU, correlation time tau), sampled at regime cadence -> dense 5s gives rho=exp(-5/60)=0.92, background 300s gives rho=exp(-5)=0.007 (independent). Observed = latent + INDEPENDENT sensor noise: rho_obs = rho_L * sigmaL^2/(sigmaL^2+sigmaE^2) ~= 0.81 at 5s (do NOT set 0.9 on emitted samples directly). Background level drifts slowly (circadian) + residual -- not white noise. still_latent_sd=6 is DERIVED so observed still SD ~= sqrt(6^2+5.4^2) ~= 8.",
+          "_tau_basis": "assumed, not derived. Inverting rho=exp(-5/tau) for a plausible 3-6 bpm/5s successive-difference at exercise onset gives tau in [37,164]s; 60 sits inside. Real HR has multiple time constants (vagal ~1s, sympathetic peak 20-30s, post-exercise fast+slow phases) and RSA/Mayer periodicity a single-tau OU cannot reproduce -- documented simplification.",
+          "_workout_sd_basis": "assumed, NOT daily_activity_level_sd (12.47 is between-DAY scatter of daily means, an error to reuse here). The export gives only the MIXTURE spread (p5 62/p50 90/p95 123 -> ~18.5 across both regimes), not within-regime. 12 is a physiological estimate.",
+          "_sensor_basis": "assumed: Apple Watch HR ~6% MAPE; 6% of 90 = 5.4 bpm, applied as independent per-sample error (absolute; proportional may be more faithful)."
+        },
+        "_note": "Apple documents THREE HR modes: foreground/workout attempts every ~5s; background attempts every ~5min but REPORTS ONLY WHEN STILL; and periodic-while-walking (no published cadence). We model TWO -- dense 5s + background 300s-attempt with a stillness gate (background_still_prob); missed attempts stretch the effective interval so the observed gap SPREAD emerges rather than being hard-coded (300s nominal, ~420s effective p95 in the source). The walking mode is folded in as a simplification. Dense CADENCE (5s) and background attempt (300s) are DEVICE properties; dense FREQUENCY/duration is a PERSON property (activity model / fitness_index). Excursion PEAK stays bounded by activityLevel (fitness_index) -- UNTOUCHED."
+      }
+    },
+    "HeartRateVariabilitySDNN": {
+      "source": "calibrated",
+      "wear": {
+        "coverage_pct": 73.0,
+        "model": "per-day-bernoulli",
+        "_note": "days present / window days (recent 12mo); refine to run-length missing-day model later."
+      },
+      "records_per_day": {
+        "p50": 3,
+        "p95": 5.0,
+        "mean": 3.427
+      },
+      "intra_day_gap_seconds": {
+        "p50": 13879.0,
+        "p95": 53454.5
+      },
+      "sample_duration_seconds": {
+        "p50": 59.0,
+        "p95": 60.0
+      },
+      "arrival_lag_seconds": {
+        "p50": 62.0,
+        "p90": 62.0,
+        "p95": 63.0
+      },
+      "hour_of_day_weights": [
+        0.02404,
+        0.04153,
+        0.01311,
+        0.02514,
+        0.00874,
+        0.01202,
+        0.00437,
+        0.0153,
+        0.03607,
+        0.06339,
+        0.03934,
+        0.04481,
+        0.03607,
+        0.05355,
+        0.04809,
+        0.08087,
+        0.05137,
+        0.08415,
+        0.05137,
+        0.07322,
+        0.0459,
+        0.06448,
+        0.03169,
+        0.05137
+      ],
+      "_hour_of_day_note": "kept in device_behavior, but partly BEHAVIORAL: reflects when the wearer was still enough for a reading, not purely the Watch's schedule.",
+      "recording": {
+        "gate": "still-periods",
+        "cadence": "poisson",
+        "day_gate_per_hour": 0.17,
+        "night_gate_per_hour": 0.27,
+        "_basis": "day 0.17 = HRV present in 17% of worn day-hours (worn-active split). night 0.27 = HRV present in 27% of ACTUAL asleep hour-cells (SleepAnalysis, 14 nights -- thin, assumed); ABOVE daytime as expected since sleep is stillest. Poisson/exponential gaps; observed p95/p50=3.85 is slightly lighter-tailed than exponential (4.32), so Poisson marginally over-produces long gaps."
+      }
+    },
+    "RestingHeartRate": {
+      "source": "calibrated",
+      "wear": {
+        "coverage_pct": 72.4,
+        "model": "per-day-bernoulli",
+        "_note": "days present / window days (recent 12mo); refine to run-length missing-day model later."
+      },
+      "records_per_day": {
+        "p50": 1,
+        "p95": 1.0,
+        "mean": 1.0
+      },
+      "intra_day_gap_seconds": {
+        "p50": null,
+        "p95": null
+      },
+      "sample_duration_seconds": {
+        "p50": 48755.0,
+        "p95": 85576.4
+      },
+      "arrival_lag_seconds": {
+        "p50": 63197.0,
+        "p90": 92393.2,
+        "p95": 128514.2
+      },
+      "hour_of_day_weights": [
+        0.41887,
+        0.0717,
+        0.00755,
+        0.00755,
+        0.00755,
+        0.01132,
+        0.00377,
+        0.03774,
+        0.13208,
+        0.07547,
+        0.01509,
+        0.01132,
+        0.03396,
+        0.02642,
+        0.01509,
+        0.03396,
+        0.01132,
+        0.04151,
+        0.00755,
+        0.01887,
+        0.00755,
+        0.00377,
+        0.0,
+        0.0
+      ],
+      "recording": {
+        "gate": "daily-summary",
+        "cadence": "none",
+        "_note": "NOT a sampling process. Present iff the day had sufficient quiet coverage (i.e. worn); emitted once end-of-day at arrival_lag. No intraday cadence."
+      }
+    },
+    "RespiratoryRate": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "sparse in the 12mo window (~10% of days) purely because it is OVERNIGHT-WEAR gated -- Watch4/watchOS 10.6 supported respiratory rate the whole time, so feature availability was never the cause; not enabled initially"
+    },
+    "OxygenSaturation": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "absent from export (needs Series 6+)"
+    },
+    "AppleSleepingWristTemperature": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "absent from export (needs Series 8+)"
+    },
+    "StepCount": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "ActiveEnergyBurned": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "VO2Max": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "SleepAnalysis": {
+      "source": "synthesized",
+      "enabled": false,
+      "_reason": "only 14 staged nights observed; insufficient to calibrate",
+      "segmentation": {
+        "_note": "segments-per-night distribution NOT yet authored (synthesized-pending). The observed values are in observed_sanity_check; too few staged nights to adopt as calibrated."
+      },
+      "recording_cadence": {
+        "_note": "one sleep session per night, segmented by stage; cadence authored when enabled."
+      },
+      "observed_sanity_check": {
+        "staged_nights": 14,
+        "observed_segments_per_night": {
+          "p50": 24.0,
+          "p95": 41.0,
+          "_note": "OBSERVED from the staged nights (not synthesized); not adopted as a parameter because n is too small."
+        }
+      }
+    }
+  },
+  "physiology": {
+    "HeartRate": {
+      "_model": "emergent-from-resting-plus-activity",
+      "_note": "Daily-mean HR is not a physiological trait; it mostly measures how much the person moved that day. HR has NO population centroid and NO between-person spread. Each HR reading emerges from the resting floor (RestingHeartRate) plus activity excursions. Raw-data view only, not a scored marker -- it just needs to look plausible.",
+      "resting_floor_from": "RestingHeartRate",
+      "within_person": {
+        "source": "calibrated",
+        "distribution": "normal",
+        "ar1_space": "linear",
+        "daily_activity_level_sd": 12.4677,
+        "daily_activity_lag1_autocorr": 0.2686,
+        "daily_activity_lag1_autocorr_n_pairs": 262,
+        "_scale_note": "absolute sd, linear AR(1). HR daily-mean CV is small (~0.14), so absolute vs cv barely differs -- same rationale as RHR.",
+        "_note": "how much one person's activity varies day to day; the only measured source for HR drift. Consumed when the HR model gains daily activity drift (v2)."
+      },
+      "fitness_index": {
+        "_note": "Per-user fitness proxy. Named for what it drives, not measured directly. In v1 it stands in for BOTH cardiorespiratory fitness (HR headroom) and activity volume -- distinct concepts collapsed for now. It is the cardiovascular-FITNESS confounder: it moves resting HR and HRV (see fitness_effects), not only HR excursions. It ALSO sets the HR excursion PEAK; note that in v1 the intra-day burst FREQUENCY and DURATION are NOT yet fitness-tied (a v1 simplification -- see device_behavior.HeartRate.intra_day_gap_seconds._regime, which references back here; reconcile in step 5).",
+        "population": {
+          "source": "synthesized",
+          "tag": "assumed",
+          "distribution": "lognormal",
+          "parameter": "peak_hr_excursion_bpm_over_resting",
+          "median": 55,
+          "cv": 0.35,
+          "_basis": "assumed range sedentary->athletic; placeholder until multi-user data."
+        },
+        "fitness_effects": {
+          "source": "synthesized",
+          "tag": "assumed",
+          "variance_share": 0.4,
+          "direction": {
+            "RestingHeartRate": "down",
+            "HeartRateVariabilitySDNN": "up"
+          },
+          "_note": "variance_share = fraction of each metric's TOTAL between-person VARIANCE attributed to fitness (residual = 1 - share). Core derives, with sigma_f = log-sigma of fitness_index and f = ln(index/median): per_efold = sqrt(share)*total_spread / sigma_f (sign from direction), residual_spread = sqrt(1-share)*total_spread. So fitness_var + residual_var = total_var exactly -- no double count. share=0.4 sized so a sedentary user and an athlete are DISTINGUISHABLE, not lost in the residual draw; ASSUMED (no decomposition study to hand)."
+        },
+        "calibrated_sample_point": {
+          "source": "calibrated",
+          "_note": "ONE between-person population sample (the source), NOT the default. p95(123) - resting(~61) approx 62 bpm over resting.",
+          "reading_quantiles_bpm": {
+            "p5": 62.0,
+            "p50": 90.0,
+            "p95": 123.0
+          },
+          "peak_excursion_bpm_over_resting_approx": 62,
+          "_sampling_bias": "These quantiles are SAMPLE-weighted, not time-weighted. Dense (~5s) sampling covers ~1.3% of waking time but ~55% of SAMPLES -- a ~42x over-representation of active periods. Time-weighted mean ~72 bpm vs sample-weighted ~90 (an 18 bpm gap purely from cadence). 'p50=90' means the WATCH REPORTS >90 for half its samples, NOT that HR is >90 half the time. Consistency check (no extra fitting): background ~72/SD8 -> low tail ~59 (obs p5 62); dense ~105/SD12 -> high tail ~125 (obs p95 123); 45% background -> p50 ~88-90 (obs 90)."
+        }
+      }
+    },
+    "HeartRateVariabilitySDNN": {
+      "within_person": {
+        "source": "calibrated",
+        "distribution": "lognormal",
+        "daily_mean_sd": 18.504,
+        "daily_mean_p50": 47.1604,
+        "lag1_autocorr": 0.2002,
+        "lag1_autocorr_n_pairs": 250,
+        "_note": "day-to-day scatter of per-day means (intra-day scatter excluded), recent 12mo window.",
+        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual.",
+        "cv": 0.392,
+        "ar1_space": "log",
+        "_scale_note": "USE cv (geometric), not daily_mean_sd, so within-person spread scales with each user's median. AR(1) runs in log space."
+      },
+      "population_centroid": {
+        "source": "synthesized",
+        "tag": "assumed",
+        "age_conditioned": true,
+        "unit": "ms",
+        "distribution": "lognormal",
+        "distribution_note": "median of the lognormal equals by_age_band; between-person width from between_person_spread.cv.",
+        "model": {
+          "ref_age": 25,
+          "ref_value_ms_ecg": 55,
+          "slope_pct_per_year": 0.8,
+          "slope_application": "multiplicative",
+          "plateau_age": 65,
+          "apple_sdnn_ecg_offset_ms": 8.3,
+          "emitted_scale": "apple"
+        },
+        "by_age_band": {
+          "20-29": 46.7,
+          "30-39": 42.5,
+          "40-49": 38.5,
+          "50-59": 34.9,
+          "60-69": 31.6,
+          "70+": 31.6
+        },
+        "_basis": "ASSUMED, not drawn from literature. Two corrections stacked on ECG-scale age norms: (1) SLOPE -- published SDNN norms (Umetani 1998, 24h Holter) are driven by circadian amplitude a ~60s Apple window cannot capture, so the 24h slope overstates decline; use 0.8%/yr, plateau after 65 (NOT RMSSD's ~1.3%/yr). (2) DEVICE SCALE -- Apple Watch underestimates SDNN by ~8.3ms vs a chest-strap reference (O'Grady et al. 2024, Sensors; Series 9/Ultra 2 vs Polar H10+Kubios), so that offset is subtracted from ECG centroids to reach Apple scale. Offset is APPROXIMATE: measured on newer devices than this export and possibly proportional rather than absolute -- direction certain, magnitude not."
+      },
+      "between_person_spread": {
+        "source": "synthesized",
+        "tag": "assumed",
+        "distribution": "lognormal",
+        "cv": 0.35,
+        "_basis": "assumed between-person CV ~35% (geometric). Expressed as CV so it scales with the age-band centroid; placeholder until >1 export."
+      }
+    },
+    "RestingHeartRate": {
+      "within_person": {
+        "source": "calibrated",
+        "distribution": "normal",
+        "daily_mean_sd": 5.435,
+        "daily_mean_p50": 61.0,
+        "lag1_autocorr": 0.2582,
+        "lag1_autocorr_n_pairs": 247,
+        "_note": "day-to-day scatter of per-day means (intra-day scatter excluded), recent 12mo window.",
+        "_caveat": "source is not a healthy-baseline reference; these may include state-driven excursions and likely OVERSTATE day-to-day variability for an unaffected individual.",
+        "ar1_space": "linear",
+        "_scale_note": "Absolute daily_mean_sd used directly (AR(1) in linear space). Deliberate for RHR: normal, narrow level range; CV scaling would barely differ."
+      },
+      "population_centroid": {
+        "source": "synthesized",
+        "tag": "assumed",
+        "age_conditioned": true,
+        "unit": "count/min",
+        "distribution": "normal",
+        "by_age_band": {
+          "20-29": 70,
+          "30-39": 70,
+          "40-49": 69,
+          "50-59": 69,
+          "60-69": 68,
+          "70+": 67
+        },
+        "_basis": "ASSUMED (no specific citation to hand -> `assumed`, not `literature`): adult resting HR mean ~70 bpm. Shape is a GENTLE MONOTONIC decline with age, consistent with Umetani 1998 (HR declines slowly with age); the earlier 70->72->70 mid-life hump had no cited basis and was removed. Population values, NOT from the source. NOTE: unlike HRV, RHR has no continuous model block -- the age curve is band-interpolated (avoids the discontinuity problem) but is therefore NOT revisable by changing one constant the way HRV's ref_age/slope are; edit the bands directly."
+      },
+      "between_person_spread": {
+        "source": "synthesized",
+        "tag": "assumed",
+        "distribution": "normal",
+        "sd": 10,
+        "_basis": "assumed; population RHR SD ~9-11 bpm. Uncited -> `assumed`."
+      },
+      "_consistency_check": "source's calibrated RHR median 61 vs 20-29 centroid 70 is ~0.9 between-person SD below the mean. Plausible: a lower resting HR is consistent with a fit young adult. Noted for parity with the HRV check; NOT used to anchor the centroid."
+    },
+    "RespiratoryRate": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "sparse in the 12mo window (~10% of days) purely because it is OVERNIGHT-WEAR gated -- Watch4/watchOS 10.6 supported respiratory rate the whole time, so feature availability was never the cause; not enabled initially"
+    },
+    "OxygenSaturation": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "absent from export (needs Series 6+)"
+    },
+    "AppleSleepingWristTemperature": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "absent from export (needs Series 8+)"
+    },
+    "StepCount": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "ActiveEnergyBurned": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "VO2Max": {
+      "source": "synthesized",
+      "enabled": false,
+      "_stub": true,
+      "_reason": "disabled; parameters not yet authored"
+    },
+    "SleepAnalysis": {
+      "source": "synthesized",
+      "enabled": false,
+      "stage_fractions_of_asleep": {
+        "distribution": "dirichlet",
+        "core": 0.5,
+        "deep": 0.18,
+        "rem": 0.22,
+        "awake_in_bed": 0.1,
+        "_basis": "literature: adult architecture ~50% N1-N2(core), ~15-20% deep(N3), ~20-25% REM. Dirichlet keeps the four fractions summing to 1 when drawn per night."
+      },
+      "total_asleep_minutes": {
+        "distribution": "normal",
+        "mean": 420,
+        "sd": 55,
+        "_basis": "literature: adult ~7h; observed p50 here is a consistency check."
+      },
+      "observed_sanity_check": {
+        "asleep_min_per_staged_night_p50": 392.25
+      }
+    }
+  }
+}

@@ -39,3 +39,10 @@ web-build/
 # Data Parsing
 data-parsing/*.xml
 data-parsing/*.csv
+# personal health data export — do not commit
+data-parsing/*.xlsx
+# intermediate, name-bearing aggregates — keep only healthkit-calibration.json
+data-parsing/johan_summary*.json
+
+# macOS junk files
+.DS_Store
