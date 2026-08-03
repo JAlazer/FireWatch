@@ -1,33 +1,21 @@
-// The TODAY tab — the daily check-in. Three states driven by DAYS OF HISTORY:
-//   1-14   LEARNING    no score; "Learning your baseline", progress, N OF 14 DAYS
-//   15-27  PROVISIONAL score + a "Provisional" banner (left rule) above it
-//   28+    FULL        score only
-//
-// The two metric rows BOTH reference the latest day where BOTH have settled data
-// (HRV lags ~62s, resting HR ~17.5h, so each metric's own latest is a different day).
-// Each row shows a chart: DEVIATION from personal baseline (σ) once a baseline exists,
-// or the RAW daily values during the early learning period (real data, no baseline
-// yet). The window is fit to the DATA — earliest present point at the left edge — so
-// it fills the width; day spacing stays truthful, so wear gaps read as gaps.
-//
-// Data is on-device: persisted profile -> buildProvider -> sample stream -> score.ts.
+// The TODAY tab — the daily check-in. PRESENTATION ONLY: it renders the view model
+// from getDailyStory (src/data/appData) and never touches the provider, samples,
+// score.ts or series.ts. Three states driven by the model's `status`:
+//   learning     no score; "Learning your baseline", progress, N OF 14 DAYS
+//   provisional  score + a "Provisional" banner (left rule) above it
+//   full         score only
+// Each metric row shows a chart of the model's deviation-or-raw series (fit to the
+// data width; gaps read as gaps). Loading + error paths exist even though the local
+// generator never errors — they're needed once this is a network call.
 
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Dimensions, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Dimensions, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Line, Polyline } from "react-native-svg";
-import { REGISTRY } from "@/src/mock/registry";
-import { heatWord, scoreSeries, type ScoreResult } from "@/src/mock/score";
-import { buildProvider } from "@/src/providers/buildProvider";
-import { asyncStorageAdapter } from "@/src/storage/asyncStorage";
-import { loadOnboarding } from "@/src/storage/onboardingStore";
+import { getDailyStory, type DailyStory, type MetricRow } from "@/src/data/appData";
 
-const DAY = 86_400_000;
-const HRV = REGISTRY.HeartRateVariabilitySDNN.identifier;
-const RHR = REGISTRY.RestingHeartRate.identifier;
-const iso = (ms: number) => new Date(ms).toISOString();
 const round = (n: number) => Math.round(n);
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const SERIF = Platform.select({ ios: "Georgia", android: "serif", default: "serif" });
@@ -35,119 +23,43 @@ const CHART_W = Dimensions.get("window").width - 48; // screen minus the 24px pa
 const DEV_H = 82;
 
 const SPECTRUM = ["#3E9E5B", "#63A84C", "#8CB03F", "#B2A63A", "#CE8B39", "#D96F3C", "#D8523E", "#C43C2E"];
+// Presentation, keyed by the model's identifiers — kept in the screen (client theming;
+// UI copy stays localizable here rather than behind the data boundary).
+const ICON: Record<MetricRow["key"], keyof typeof MaterialCommunityIcons.glyphMap> = { hrv: "pulse", rhr: "heart-outline" };
+const METRIC_COLOR: Record<MetricRow["key"], string> = { hrv: "#3E7CB0", rhr: "#C4603C" };
+const EMPTY_COPY: Record<MetricRow["key"], string> = { hrv: "No readings yet", rhr: "First reading arrives tonight" };
 const WORD_COLOR: Record<string, string> = { Calm: "#3E9E5B", Steady: "#B07A3C", Warming: "#DE8A3A", Elevated: "#E05A45", "Running hot": "#C43C2E" };
-
-// Direction-aware read. HRV: LOWER is the concerning direction (a drop). Resting HR:
-// HIGHER is concerning. Takes the SAME natural-sign deviations shown in the metric
-// rows (HRV<0 = below, RHR>0 = above) so the sentence can never contradict them.
-// Template for now — LLM later.
-function stateSentence(hrvDev: number | null, rhrDev: number | null): string {
-  const hrvLow = hrvDev != null && hrvDev <= -1; // HRV below its baseline (concerning)
-  const rhrHigh = rhrDev != null && rhrDev >= 1; // resting HR above its baseline (concerning)
-  if (hrvLow && rhrHigh) return "Your heart-rate variability is below your usual and your resting heart rate is above it — both point toward more strain. Consider an easier day.";
-  if (rhrHigh) return "Your resting heart rate is running above your usual, while your heart-rate variability is holding. Worth keeping an eye on.";
-  if (hrvLow) return "Your heart-rate variability has dipped below your usual, while your resting heart rate is steady. Worth a glance.";
-  return "Your heart-rate variability and resting heart rate are both close to your usual — nothing standing out.";
-}
-
-interface MetricView {
-  value: number | null; // raw daily mean at the shown day (clinician number)
-  unit: string;
-  devSigma: number | null; // signed deviation from baseline, σ (natural sign: HRV<0 low, RHR>0 high)
-  concerningSign: -1 | 1; // direction that is concerning (HRV below = -1, RHR above = +1)
-  color: string;
-  chart: { t: number; v: number }[]; // present points only; t = day index (honest spacing), v = deviation or raw
-  mode: "deviation" | "raw"; // raw during early learning (no baseline yet)
-}
-
-function dailyMeans(samples: { quantity: number; startDate: Date }[]): Map<number, number> {
-  const acc = new Map<number, { s: number; n: number }>();
-  for (const x of samples) {
-    const d = Math.floor(x.startDate.getTime() / DAY);
-    const a = acc.get(d) ?? { s: 0, n: 0 };
-    a.s += x.quantity; a.n += 1; acc.set(d, a);
-  }
-  const out = new Map<number, number>();
-  for (const [d, a] of acc) out.set(d, a.s / a.n);
-  return out;
-}
-
-function metricView(
-  daily: Map<number, number>, byDay: Map<number, ScoreResult>, commonDay: number | null,
-  ownLatestAllowed: boolean, zOf: (r: ScoreResult) => number | null, naturalMul: 1 | -1, unit: string, concerningSign: -1 | 1, color: string,
-): MetricView {
-  const dayForVal = commonDay ?? (ownLatestAllowed && daily.size ? Math.max(...daily.keys()) : null);
-  const value = dayForVal != null ? daily.get(dayForVal) ?? null : null;
-  const devAt = (d: number): number | null => { const r = byDay.get(d); const z = r ? zOf(r) : null; return z == null ? null : naturalMul * z; };
-  const devSigma = dayForVal != null ? devAt(dayForVal) : null;
-
-  // Deviation once a baseline exists; raw daily values during early learning.
-  const useDeviation = devSigma != null;
-  const chart: { t: number; v: number }[] = [];
-  if (dayForVal != null) {
-    for (let d = dayForVal - 6; d <= dayForVal; d++) {
-      const v = useDeviation ? devAt(d) : daily.has(d) ? daily.get(d)! : null;
-      if (v != null) chart.push({ t: d, v });
-    }
-  }
-  return { value, unit, devSigma, concerningSign, color, chart, mode: useDeviation ? "deviation" : "raw" };
-}
-
-const EMPTY: MetricView = { value: null, unit: "", devSigma: null, concerningSign: 1, color: "#999", chart: [], mode: "raw" };
-
-interface TodayData {
-  hasProfile: boolean;
-  daysOfHistory: number;
-  today: ScoreResult | null;
-  hrv: MetricView;
-  rhr: MetricView;
-}
-
-async function loadToday(): Promise<TodayData> {
-  const profile = await loadOnboarding(asyncStorageAdapter);
-  if (!profile) return { hasProfile: false, daysOfHistory: 0, today: null, hrv: EMPTY, rhr: EMPTY };
-
-  const now = Date.now();
-  const daysOfHistory = Math.max(1, Math.floor((now - Date.parse(profile.startDate)) / DAY));
-  const provider = buildProvider(profile, { now: () => now });
-  const opts = { from: new Date(Date.parse(profile.startDate)), to: new Date(now + DAY) };
-  const [hrv, rhr] = await Promise.all([provider.queryQuantitySamples(HRV, opts), provider.queryQuantitySamples(RHR, opts)]);
-
-  const series = scoreSeries(hrv, rhr, profile.startDate, iso(now)); // full history -> correct hysteresis at today
-  const today = series[series.length - 1] ?? null;
-  const byDay = new Map(series.map((r) => [Math.floor(Date.parse(r.day) / DAY), r]));
-
-  const hrvDaily = dailyMeans(hrv), rhrDaily = dailyMeans(rhr);
-  const common = [...hrvDaily.keys()].filter((d) => rhrDaily.has(d));
-  const commonDay = common.length ? Math.max(...common) : null;
-
-  return {
-    hasProfile: true, daysOfHistory, today,
-    hrv: metricView(hrvDaily, byDay, commonDay, true, (r) => r.hrvZ, -1, "ms", -1, "#3E7CB0"),
-    rhr: metricView(rhrDaily, byDay, commonDay, false, (r) => r.rhrZ, 1, "bpm", 1, "#C4603C"),
-  };
-}
 
 export default function TodayScreen() {
   const insets = useSafeAreaInsets();
-  const [data, setData] = useState<TodayData | null>(null);
+  const [story, setStory] = useState<DailyStory | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useFocusEffect(
     useCallback(() => {
       let alive = true;
-      setData(null);
-      loadToday().then((d) => alive && setData(d));
+      setStory(null);
+      setError(null);
+      getDailyStory()
+        .then((s) => alive && setStory(s))
+        .catch((e) => alive && setError(String(e)));
       return () => { alive = false; };
-    }, []),
+    }, [reload]),
   );
 
   return (
     <View style={styles.container}>
-      {!data ? (
+      {error ? (
+        <View style={styles.center}>
+          <Text style={styles.muted}>Couldn't load your day.</Text>
+          <Pressable onPress={() => setReload((n) => n + 1)} style={styles.retry}><Text style={styles.retryText}>Retry</Text></Pressable>
+        </View>
+      ) : !story ? (
         <View style={styles.center}><ActivityIndicator color="#C43C2E" /></View>
       ) : (
         <ScrollView style={styles.container} contentContainerStyle={{ padding: 24, paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40 }}>
-          <Body data={data} />
+          <Body story={story} />
         </ScrollView>
       )}
       {/* Opaque cover over the status-bar strip so scrolled content can't collide with it. */}
@@ -156,19 +68,17 @@ export default function TodayScreen() {
   );
 }
 
-function Body({ data }: { data: TodayData }) {
-  const { daysOfHistory, today, hrv, rhr, hasProfile } = data;
-  const phase = daysOfHistory < 15 ? "learning" : daysOfHistory < 28 ? "provisional" : "full";
-  const hasScore = today != null && today.heat != null;
+function Body({ story }: { story: DailyStory }) {
+  const { status, daysOfHistory, score, metrics, hasProfile } = story;
   return (
     <>
       {!hasProfile ? (
         <Text style={styles.muted}>No profile yet. Finish onboarding to begin.</Text>
-      ) : phase === "learning" ? (
+      ) : status === "learning" ? (
         <Learning days={daysOfHistory} />
       ) : (
         <>
-          {phase === "provisional" && (
+          {status === "provisional" && (
             <View style={styles.banner}>
               <Text style={styles.bannerText}>
                 <Text style={styles.bannerLead}>Provisional. </Text>
@@ -176,13 +86,12 @@ function Body({ data }: { data: TodayData }) {
               </Text>
             </View>
           )}
-          {hasScore ? <Score today={today!} sentence={stateSentence(hrv.devSigma, rhr.devSigma)} /> : <Text style={styles.muted}>Gathering enough readings to score…</Text>}
+          {score ? <Score score={score} /> : <Text style={styles.muted}>Gathering enough readings to score…</Text>}
         </>
       )}
 
       <View style={styles.metrics}>
-        <Metric icon="pulse" label="Heart rate variability" v={hrv} empty="No readings yet" />
-        <Metric icon="heart-outline" label="Resting heart rate" v={rhr} empty="First reading arrives tonight" />
+        {metrics.map((row) => <Metric key={row.key} row={row} />)}
       </View>
     </>
   );
@@ -207,16 +116,13 @@ function Learning({ days }: { days: number }) {
   );
 }
 
-function Score({ today, sentence }: { today: ScoreResult; sentence: string }) {
-  const heat = today.heat ?? 0;
-  const word = heatWord(heat);
-  const color = WORD_COLOR[word];
-  const tickPct = clamp((heat / 5) * 100, 1, 99);
+function Score({ score }: { score: NonNullable<DailyStory["score"]> }) {
+  const tickPct = clamp((score.heat / 5) * 100, 1, 99);
   return (
     <View>
       <Text style={styles.kicker}>TODAY · THREE-DAY AVERAGE</Text>
-      <Text style={[styles.word, { color }]}>{word}</Text>
-      <Text style={styles.outOf}>{heat.toFixed(1)} out of 5</Text>
+      <Text style={[styles.word, { color: WORD_COLOR[score.word] }]}>{score.word}</Text>
+      <Text style={styles.outOf}>{score.heat.toFixed(1)} out of 5</Text>
       <View style={styles.barRow}>
         {SPECTRUM.map((c, i) => (
           <View key={i} style={[styles.seg, { backgroundColor: c }, i === 0 && styles.segStart, i === SPECTRUM.length - 1 && styles.segEnd]} />
@@ -227,15 +133,14 @@ function Score({ today, sentence }: { today: ScoreResult; sentence: string }) {
         <Text style={styles.barLabel}>CALM</Text>
         <Text style={styles.barLabel}>RUNNING HOT</Text>
       </View>
-      <Text style={styles.sentence}>{sentence}</Text>
+      <Text style={styles.sentence}>{score.sentence}</Text>
     </View>
   );
 }
 
-// The chart carries the row. DEVIATION mode centres on a zero (baseline) line; RAW mode
-// autoscales to the values (no zero line — 0 isn't meaningful for raw HRV/HR). x is fit
-// to the data span (earliest present point at the left edge), spacing by day so a gap
-// reads as a gap. >=2 points -> line; 1 point -> dot; 0 -> nothing (header shows value).
+// DEVIATION mode centres on a zero (baseline) line; RAW mode autoscales to the values
+// (no zero line — 0 isn't meaningful for raw HRV/HR). x is fit to the data span; >=2
+// points -> line; 1 point -> dot; 0 -> nothing (header shows the value).
 function MetricChart({ points, mode, color }: { points: { t: number; v: number }[]; mode: "deviation" | "raw"; color: string }) {
   if (points.length === 0) return null;
   const padY = 12, edge = 4;
@@ -266,19 +171,18 @@ function MetricChart({ points, mode, color }: { points: { t: number; v: number }
   );
 }
 
-function Metric({ icon, label, v, empty }: { icon: keyof typeof MaterialCommunityIcons.glyphMap; label: string; v: MetricView; empty: string }) {
-  // No numeric σ label (jargon). The chart plots DEVIATION and its zero line IS the
-  // baseline, so above/below reads visually. Header is just label + raw value, stacked
-  // and left-aligned above the full-width chart.
-  const valueStr = v.value != null ? `${round(v.value)} ${v.unit}` : null;
+function Metric({ row }: { row: MetricRow }) {
+  // Header is just label + raw value, left-aligned above the full-width chart. The
+  // chart plots DEVIATION (its zero line is the baseline), so above/below reads visually.
+  const valueStr = row.value != null ? `${round(row.value)} ${row.unit}` : null;
   return (
     <View style={styles.metric}>
       <View style={styles.metricHeadLeft}>
-        <MaterialCommunityIcons name={icon} size={16} color="#666" style={{ marginRight: 7 }} />
-        <Text style={styles.metricLabel}>{label}</Text>
+        <MaterialCommunityIcons name={ICON[row.key]} size={16} color="#666" style={{ marginRight: 7 }} />
+        <Text style={styles.metricLabel}>{row.label}</Text>
       </View>
-      <Text style={valueStr == null ? styles.metricEmpty : styles.metricValueHead}>{valueStr ?? empty}</Text>
-      <MetricChart points={v.chart} mode={v.mode} color={v.color} />
+      <Text style={valueStr == null ? styles.metricEmpty : styles.metricValueHead}>{valueStr ?? EMPTY_COPY[row.key]}</Text>
+      <MetricChart points={row.series} mode={row.mode} color={METRIC_COLOR[row.key]} />
     </View>
   );
 }
@@ -288,6 +192,8 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   statusCover: { position: "absolute", top: 0, left: 0, right: 0, backgroundColor: "#FFFFFF" },
   muted: { fontSize: 15, color: "#888", marginVertical: 24, fontFamily: SERIF },
+  retry: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10, backgroundColor: "#F0F0F0" },
+  retryText: { fontSize: 15, fontWeight: "600", color: "#444", fontFamily: SERIF },
   kicker: { fontSize: 13, letterSpacing: 2, color: "#9A9A9A", fontWeight: "600", marginBottom: 10 },
   sentence: { fontSize: 18, color: "#333", lineHeight: 27, marginTop: 22, fontFamily: SERIF },
 
@@ -308,7 +214,6 @@ const styles = StyleSheet.create({
 
   learnTitle: { fontSize: 34, fontWeight: "700", color: "#222", fontFamily: SERIF, marginBottom: 20 },
   progressTrack: { height: 8, borderRadius: 4, backgroundColor: "#F0F0F0", overflow: "hidden" },
-  // Neutral ink — NOT a spectrum colour: green/red would imply a score during a state that has none.
   progressFill: { height: 8, borderRadius: 4, backgroundColor: "#3A3A3A" },
   progressLabel: { fontSize: 13, letterSpacing: 1, color: "#999", fontWeight: "600", marginTop: 8 },
 

@@ -1,6 +1,10 @@
-// Verifies the Today-tab STATE logic (days of history -> phase; score presence;
-// day-1 resting-HR empty state):
+// Verifies the Today-tab STATE logic against the SEAM's gate (getDailyStory):
 //   npx tsx src/dev/today.check.ts
+// The gate counts DATA-producing days (both signals present), not calendar days — the
+// same basis as the scorer's readiness floor. Key invariant (item 1): learning shows no
+// score; provisional/full ALWAYS show a score (the gate and scorer can't drift, so
+// "provisional but nothing to show" never happens). Plus: day-1 resting-HR empty, and a
+// flare reaches elevated on recent settled days.
 
 import { buildProvider } from "../providers/buildProvider";
 import { REGISTRY } from "../mock/registry";
@@ -19,42 +23,40 @@ function memStore(): KeyValueStore {
   const m = new Map<string, string>();
   return { getItem: async (k) => m.get(k) ?? null, setItem: async (k, v) => void m.set(k, v), removeItem: async (k) => void m.delete(k) };
 }
+const daySet = (a: { startDate: Date }[]) => new Set(a.map((x) => Math.floor(x.startDate.getTime() / DAY)));
 
-// Mirrors app/(tabs)/dashboard.tsx loadToday(), minus AsyncStorage/RN.
+// Mirrors src/data/appData.ts getDailyStory(), minus AsyncStorage/RN.
 async function today(scenario: DevScenario, startDate: string) {
   const store = memStore();
   await saveOnboarding(store, devProfile(scenario, NOW), { startDate });
   const profile = (await loadOnboarding(store))!;
-  const daysOfHistory = Math.max(1, Math.floor((NOW - Date.parse(profile.startDate)) / DAY));
   const provider = buildProvider(profile, { now });
   const opts = { from: new Date(Date.parse(profile.startDate)), to: new Date(NOW + DAY) };
   const [hrv, rhr] = await Promise.all([provider.queryQuantitySamples(HRV, opts), provider.queryQuantitySamples(RHR, opts)]);
   const series = scoreSeries(hrv, rhr, profile.startDate, iso(NOW)); // full history (carry hysteresis)
   const t = series[series.length - 1];
-  const phase = daysOfHistory < 15 ? "learning" : daysOfHistory < 28 ? "provisional" : "full";
-  // "today" (NOW) is clipped (resting HR arrives ~17.5h late), so a flare's current
-  // day is a noisy signal — check the recent SETTLED days for the elevated state.
-  const recentElevated = series.slice(-4, -1).some((r) => r.elevated);
-  return { daysOfHistory, phase, hasScore: t?.level != null, level: t?.level ?? null, rhrCount: rhr.length, recentElevated };
+  const hd = daySet(hrv), rd = daySet(rhr);
+  const dataDays = [...hd].filter((d) => rd.has(d)).length; // GATE = days with both signals
+  const phase = dataDays < 15 ? "learning" : dataDays < 28 ? "provisional" : "full";
+  const hasScore = phase !== "learning" && t?.heat != null;
+  const recentElevated = series.slice(-4, -1).some((r) => r.elevated); // today is clipped
+  return { dataDays, phase, hasScore, level: t?.level ?? null, rhrCount: rhr.length, recentElevated };
 }
 
 async function main() {
   let ok = true;
   const expect = (name: string, cond: boolean) => { console.log(`  ${cond ? "PASS" : "FAIL"}  ${name}`); ok = ok && cond; };
 
-  console.log("=== phase by days of history (calm) ===");
+  console.log("=== gate = data-days; non-learning ALWAYS shows a score (no drift) ===");
   for (const d of [1, 7, 15, 20, 30, 60]) {
     const r = await today("calm", devStartDate(d, NOW));
-    const wantPhase = d < 15 ? "learning" : d < 28 ? "provisional" : "full";
-    console.log(`  ${String(d).padStart(2)}d -> ${r.phase.padEnd(11)} score=${r.hasScore ? "yes" : "no "} (level ${r.level})`);
-    expect(`${d}d is ${wantPhase}`, r.phase === wantPhase);
-    if (d < 15) expect(`${d}d shows NO score`, r.hasScore === false);
-    else expect(`${d}d shows a score`, r.hasScore === true);
+    console.log(`  preset ${String(d).padStart(2)}d -> ${String(r.dataDays).padStart(2)} data-days -> ${r.phase.padEnd(11)} score=${r.hasScore ? "yes" : "no"}`);
+    expect(`${d}d preset: ${r.phase === "learning" ? "no score in learning" : "score present when scored"}`, r.phase === "learning" ? !r.hasScore : r.hasScore);
   }
 
   console.log("\n=== day-1 resting HR empty state ===");
   const d1 = await today("calm", iso(NOW)); // startDate = now -> the true first day
-  console.log(`  first day: daysOfHistory=${d1.daysOfHistory} rhrCount=${d1.rhrCount}`);
+  console.log(`  first day: data-days=${d1.dataDays} rhrCount=${d1.rhrCount}`);
   expect("first day is learning", d1.phase === "learning");
   expect("first day has NO resting-HR reading yet (→ 'arrives tonight')", d1.rhrCount === 0);
 
