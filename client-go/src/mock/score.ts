@@ -20,20 +20,60 @@ const DAY_MS = 86_400_000;
 export const SCORING = {
   ROLL_DAYS: 3, // rolling-average window
   BASELINE_MAX_DAYS: 56, // baseline window grows toward this as data accumulates
-  BASELINE_MIN_DAYS: 28, // need this many present days to exit calibrating
+  BASELINE_MIN_DAYS: 28, // this many present days -> full-confidence "scored"
+  // SANITY FLOOR only: min rolling points for a usable median/MAD. The PRODUCT
+  // boundary "first score on day 15" is enforced by the Today tab via DAYS OF
+  // HISTORY, not here — because the baseline lags calendar days by ROLL_DAYS (15
+  // calendar days ≈ 11 rolling points), so a calendar-day gate can't live in this
+  // sample-only module. Kept low enough that day 15 reliably has a score even with
+  // wear gaps; the day-15 gate upstream is what prevents thin-baseline scores from
+  // ever being shown.
+  BASELINE_PROVISIONAL_DAYS: 8,
   Z_THRESHOLD: 1.0, // per-signal directed-z to count as "concerning"
   EXIT_DAYS: 2, // consecutive days failing STAY before dropping out of elevated
 } as const;
 
 export interface ScoreResult {
   day: string;
-  status: "calibrating" | "scored";
+  // score.ts's own confidence signal, by ROLLING-point count in the baseline:
+  // below the sanity floor -> "calibrating" (no score); < BASELINE_MIN_DAYS ->
+  // "provisional"; else "scored". NOTE: the Today tab drives its learning/
+  // provisional/full states by DAYS OF HISTORY (see dashboard.tsx); this is secondary.
+  status: "calibrating" | "provisional" | "scored";
   level: number | null; // 1 (calm) .. 5; null while calibrating
   score: number | null; // continuous severity when elevated, else 0
+  // Continuous 0-5 display value, derived from the SAME quantity the concordance
+  // rule uses, so number and word can't disagree (see heatOf / heatWord). null while
+  // calibrating. Not elevated stays < 3 (Calm/Steady); elevated is >= 3 (Warming+).
+  heat: number | null;
   hrvZ: number | null; // directed z (positive = HRV dropped)
   rhrZ: number | null; // directed z (positive = resting HR rose)
   elevated: boolean;
   reason: string;
+}
+
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+/**
+ * The 0-5 display value — ONE authority, mirroring the concordance rule:
+ *   not elevated -> min(z): both signals must move to enter, so the WEAKER one gates
+ *   elevated     -> max(z): the asymmetric stay rule lets the stronger one carry
+ * heat = 2 + concordZ, so concordZ = threshold (1.0) sits at the 3.0 word boundary.
+ * Not elevated is held < 3 (concordance unconfirmed — matters when one signal is
+ * missing), elevated is >= 3 by construction. No clamp dead zone: the two ranges
+ * meet at 3.0.
+ */
+export function heatOf(hrvZ: number | null, rhrZ: number | null, elevated: boolean): number | null {
+  const present = [hrvZ, rhrZ].filter((z): z is number => z != null);
+  if (!present.length) return null;
+  const concordZ = elevated ? Math.max(...present) : Math.min(...present);
+  const heat = clamp(2 + concordZ, 0, 5);
+  return elevated ? Math.max(heat, 3) : Math.min(heat, 2.99);
+}
+
+/** The single word for a heat value — derived from heat, so it tracks the number. */
+export function heatWord(heat: number): string {
+  return heat < 2 ? "Calm" : heat < 3 ? "Steady" : heat < 3.75 ? "Warming" : heat < 4.5 ? "Elevated" : "Running hot";
 }
 
 const dayIndex = (iso: string) => Math.floor(Date.parse(iso) / DAY_MS);
@@ -50,7 +90,7 @@ function median(xs: number[]): number {
 function dailyMeans(samples: QuantitySample[]): Map<number, number> {
   const acc = new Map<number, { sum: number; n: number }>();
   for (const s of samples) {
-    const d = Math.floor(Date.parse(s.startDate) / DAY_MS);
+    const d = Math.floor(s.startDate.getTime() / DAY_MS);
     const a = acc.get(d) ?? { sum: 0, n: 0 };
     a.sum += s.quantity;
     a.n += 1;
@@ -78,20 +118,21 @@ function rolling(daily: Map<number, number>, end: number): number | null {
  * null if fewer than BASELINE_MIN_DAYS days have a rolling value. Flagged days are
  * NOT excluded (that would make the baseline depend on the score).
  */
-function robustBaseline(daily: Map<number, number>, end: number): { center: number; scale: number } | null {
+function robustBaseline(daily: Map<number, number>, end: number): { center: number; scale: number; n: number } | null {
   const hi = end - SCORING.ROLL_DAYS;
   const rolls: number[] = [];
   for (let d = hi - SCORING.BASELINE_MAX_DAYS + 1; d <= hi; d++) {
     const r = rolling(daily, d);
     if (r != null) rolls.push(r);
   }
-  if (rolls.length < SCORING.BASELINE_MIN_DAYS) return null;
+  if (rolls.length < SCORING.BASELINE_PROVISIONAL_DAYS) return null; // below sanity floor -> no baseline
   const center = median(rolls);
   const mad = median(rolls.map((r) => Math.abs(r - center)));
-  return { center, scale: 1.4826 * mad || 1e-9 };
+  return { center, scale: 1.4826 * mad || 1e-9, n: rolls.length };
 }
 
-/** Directed z for both signals on a given day (null z = that signal unavailable). */
+/** Directed z for both signals on a given day. `baselineDays` = min days behind the
+ *  two baselines (drives calibrating -> provisional -> scored). */
 function directedZ(hrvDaily: Map<number, number>, rhrDaily: Map<number, number>, end: number) {
   const hb = robustBaseline(hrvDaily, end);
   const rb = robustBaseline(rhrDaily, end);
@@ -100,6 +141,7 @@ function directedZ(hrvDaily: Map<number, number>, rhrDaily: Map<number, number>,
   const rhrNow = rolling(rhrDaily, end);
   return {
     ready: true as const,
+    baselineDays: Math.min(hb.n, rb.n),
     hrvZ: hrvNow == null ? null : (hb.center - hrvNow) / hb.scale, // HRV down -> positive
     rhrZ: rhrNow == null ? null : (rhrNow - rb.center) / rb.scale, // RHR up -> positive
   };
@@ -137,10 +179,11 @@ export function scoreSeries(hrvSamples: QuantitySample[], rhrSamples: QuantitySa
     if (!z.ready) {
       elevated = false;
       stale = 0;
-      out.push({ day: isoOfDay(d), status: "calibrating", level: null, score: null, hrvZ: null, rhrZ: null, elevated: false, reason: `baseline not ready (need >=${SCORING.BASELINE_MIN_DAYS}d for both signals)` });
+      out.push({ day: isoOfDay(d), status: "calibrating", level: null, score: null, heat: null, hrvZ: null, rhrZ: null, elevated: false, reason: `learning your baseline (need >=${SCORING.BASELINE_PROVISIONAL_DAYS}d for both signals)` });
       continue;
     }
-    const { hrvZ, rhrZ } = z;
+    const { hrvZ, rhrZ, baselineDays } = z;
+    const provisional = baselineDays < SCORING.BASELINE_MIN_DAYS; // 14-27 days: low confidence
     const enter = concern(hrvZ) && concern(rhrZ);
     const stay = (concern(hrvZ) && !contradicts(rhrZ)) || (concern(rhrZ) && !contradicts(hrvZ));
 
@@ -158,10 +201,12 @@ export function scoreSeries(hrvSamples: QuantitySample[], rhrSamples: QuantitySa
     }
 
     const severity = elevated ? Math.max(hrvZ ?? 0, rhrZ ?? 0) : 0;
+    const heat = heatOf(hrvZ, rhrZ, elevated);
     out.push({
-      day: isoOfDay(d), status: "scored", level: levelFor(elevated, severity), score: round(severity),
+      day: isoOfDay(d), status: provisional ? "provisional" : "scored", level: levelFor(elevated, severity), score: round(severity),
+      heat: heat == null ? null : round(heat),
       hrvZ: hrvZ == null ? null : round(hrvZ), rhrZ: rhrZ == null ? null : round(rhrZ), elevated,
-      reason: `${reason} (HRV z=${hrvZ == null ? "-" : round(hrvZ)}, RHR z=${rhrZ == null ? "-" : round(rhrZ)})`,
+      reason: `${provisional ? "[provisional, low confidence] " : ""}${reason} (HRV z=${hrvZ == null ? "-" : round(hrvZ)}, RHR z=${rhrZ == null ? "-" : round(rhrZ)}, ${baselineDays}d baseline)`,
     });
   }
   return out;

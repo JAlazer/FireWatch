@@ -32,7 +32,11 @@ export type Medication = "beta_blocker" | "steroid";
 /** The onboarding answers (mirrors the Screen 1 survey the client collects). */
 export interface OnboardingProfile {
   seed: string;
-  age: number;
+  // Canonical is BIRTH DATE, not age: a stored age silently rots (the person ages,
+  // the number doesn't). Age is DERIVED where the mapping needs a number (see
+  // ageOn / toPhysiologyProfile). Sourced from HealthKit DOB, else a DOB picker;
+  // today it's approximated from the onboarding age wheel.
+  birthDate: ISODate;
   activityLevel?: number; // optional fitness override (not collected in onboarding v1)
   autoimmune?: boolean;
   stressed?: boolean;
@@ -111,6 +115,20 @@ export const EFFECT_TABLE = {
       [HRV]: lit(1.55, "Niemelä et al., JACC", "24h HF power +62-64%, RMSSD +62-79% on atenolol/metoprolol; ECG-derived and DISCOUNTED (discount assumed)"),
       [RHR]: lit(0.88, "Niemelä et al., JACC", "resting HR lowered on beta-blockade; discounted"),
     },
+    // OPEN ITEM — KNOWN LIMITATION (not blocking). This models beta-blockade as a
+    // constant multiplicative shift of the RESTING LEVEL only. Under personal
+    // median/MAD scoring that cancels exactly (baseline and flare days shift by the
+    // same factor), so a CHRONIC beta-blocker correctly does NOT mask a flare — a
+    // robustness property of personal-baseline scoring, asserted in
+    // dev/devscreen.check.ts. But beta-blockade also BLUNTS RESPONSE AMPLITUDE: it
+    // caps the chronotropic response to sympathetic drive (why exercise HR is
+    // attenuated on it), so a flare that would raise resting HR ~5 bpm might raise it
+    // ~3. That IS real masking, needs no coincident onset, and is missed here because
+    // the model scales the flare response with the shifted baseline instead of
+    // DAMPING it. Fix = an attenuation factor on episode effects while a confound is
+    // active — but that factor is ASSUMED (the JACC study measured resting HRV on
+    // beta-blockers, not blunting of an inflammatory response), so it needs a
+    // literature check before implementation.
   },
   steroid: {
     kind: "no-op",
@@ -143,6 +161,19 @@ function flareDurationDays(rng: Rng): number {
   if (u < 0.57) return rng.int(3, 6);
   if (u < 0.7) return rng.int(7, 13);
   return rng.int(14, 21);
+}
+
+/** Whole-year age at `asOfMs` from an ISO birth date. Age is DERIVED (never stored)
+ *  so it can't rot: the same birth date yields a larger age next year. Resolved to
+ *  a number ONCE per provider build (baked into the generated store), so this never
+ *  threatens range-independence. */
+export function ageOn(birthDate: ISODate, asOfMs: number): number {
+  const b = new Date(Date.parse(birthDate));
+  const a = new Date(asOfMs);
+  let age = a.getUTCFullYear() - b.getUTCFullYear();
+  const m = a.getUTCMonth() - b.getUTCMonth();
+  if (m < 0 || (m === 0 && a.getUTCDate() < b.getUTCDate())) age--;
+  return age;
 }
 
 const addDays = (iso: ISODate, n: number): ISODate => new Date(Date.parse(iso) + n * DAY_MS).toISOString();
@@ -180,7 +211,10 @@ function illnessEpisode(o: OnboardingProfile, range: DateRange): Episode {
 }
 
 // --- the mapping ---------------------------------------------------------------
-export function toPhysiologyProfile(o: OnboardingProfile, range: DateRange): PhysiologyProfile {
+// `asOfMs` is the moment age is evaluated — pass the INJECTABLE clock (buildProvider
+// forwards its `now`), so a backdated dev preset derives age from the preset's now,
+// not the wall clock. Defaults to the range end when not given.
+export function toPhysiologyProfile(o: OnboardingProfile, range: DateRange, asOfMs?: number): PhysiologyProfile {
   const baselineShifts: BaselineShift[] = [];
   const confounds: Confound[] = [];
   const episodes: Episode[] = [];
@@ -209,5 +243,9 @@ export function toPhysiologyProfile(o: OnboardingProfile, range: DateRange): Phy
   if (o.recentIllness) episodes.push(illnessEpisode(o, range));
   if (o.explicitEpisodes) episodes.push(...o.explicitEpisodes);
 
-  return { seed: o.seed, age: o.age, activityLevel: o.activityLevel, baselineShifts, episodes, confounds };
+  // Resolve age ONCE, as-of the injected clock (or range end), and carry birthDate
+  // through for an accurate getDateOfBirth. The generator only ever reads the
+  // resolved number, so range-independence is unaffected.
+  const age = ageOn(o.birthDate, asOfMs ?? Date.parse(range.to));
+  return { seed: o.seed, age, birthDate: o.birthDate, activityLevel: o.activityLevel, baselineShifts, episodes, confounds };
 }

@@ -297,11 +297,21 @@ export default function Screen1() {
               ...(sick ? ["sick"] : []),
               ...(meds ? ["meds"] : []),
             ];
+            // Carry BIRTH DATE, not age: a stored age silently rots (they age, it
+            // doesn't). Approximated from the wheel (anniversary today) until a real
+            // DOB source exists — the spec is "HealthKit DOB, else DOB picker".
+            // `age` is non-null here (Continue is disabled until it's picked).
+            const today = new Date();
+            const birthDate = new Date(
+              Date.UTC(today.getUTCFullYear() - age!, today.getUTCMonth(), today.getUTCDate()),
+            )
+              .toISOString()
+              .slice(0, 10);
             router.push({
               pathname: "/onboarding/markers",
               params: {
                 selected: selectedKeys.join(","),
-                age: String(age),
+                birthDate,
                 sickTypes: sickTypes.join(","),
                 medTypes: medTypes.join(","),
               },

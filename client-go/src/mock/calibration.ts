@@ -60,7 +60,7 @@ export interface BetweenPersonSpread {
 
 export interface ChangeLog {
   retraction_rate: number;
-  backfill_event: { probability_per_generation: number; max_lag_days: number };
+  backfill_event: { events_per_year: number; max_lag_days: number };
 }
 
 /** Wear: night vs day, each with its own probability; then per-metric gates. */
@@ -92,6 +92,7 @@ const calibration = raw as unknown as {
   wear_model: WearModel;
   device_behavior: Record<string, DeviceBehavior & { recording: Recording }>;
   physiology: Record<string, unknown>;
+  metric_coupling?: Record<string, { innovation_corr?: number }>;
 };
 
 export const SCHEMA_VERSION: string = calibration.schema_version;
@@ -112,6 +113,14 @@ export function physiology<T = unknown>(metricKey: string): T {
   const p = calibration.physiology[metricKey];
   if (!p) throw new Error(`No physiology for metric "${metricKey}"`);
   return p as T;
+}
+
+/** Correlation of the two latent AR(1) innovations for a metric pair (0 if absent).
+ *  Negative for HRV<->RHR: a low-HRV day tends to be a high-RHR day. Order-independent. */
+export function innovationCorr(metricA: string, metricB: string): number {
+  const mc = calibration.metric_coupling;
+  const hit = mc?.[`${metricA}__${metricB}`] ?? mc?.[`${metricB}__${metricA}`];
+  return hit?.innovation_corr ?? 0;
 }
 
 // --- Continuous age-conditioned centroids (#9) --------------------------------

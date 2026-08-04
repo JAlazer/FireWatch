@@ -9,7 +9,7 @@
 // models then read that latent value and add sensor/intra-day variation. Emitting
 // day-independent draws would jitter where real physiology trends.
 
-import { CHANGE_LOG, WEAR_MODEL, centroidForAge, deviceBehavior, physiology, recording } from "./calibration";
+import { CHANGE_LOG, WEAR_MODEL, centroidForAge, deviceBehavior, innovationCorr, physiology, recording } from "./calibration";
 import { REGISTRY } from "./registry";
 import { Rng, deterministicUuid } from "./rng";
 import { baselineFactor, confoundFactor, type PhysiologyProfile } from "./profile";
@@ -69,22 +69,49 @@ function lagSeconds(rng: Rng, lag: { p50: number; p90: number; p95: number }): n
   return Math.max(0, lag.p50 * Math.exp(sigma * rng.normalStd()));
 }
 
+const AR1_LOOKBACK = 15; // phi^(2(L+1)) <= 2.5e-15 at the worst daily phi (0.35)
+
 /**
- * AR(1) latent daily series. `marginalSigma` is the marginal spread IN THE
- * WORKING SPACE (#17): for logSpace metrics pass the log-space sigma (derived
- * from the calibrated CV, so spread scales with the user's median, not an
- * absolute sd measured at a different median); for linear metrics pass the sd.
+ * RANGE-INDEPENDENT AR(1) latent daily series, anchored to the ABSOLUTE epoch day
+ * so the same calendar day yields the same value regardless of the requested range
+ * (the P5 property). Instead of forward-simulating from the range start, each day's
+ * value is a truncated sum over the last AR1_LOOKBACK days:
+ *     x_d = mu + sigma*sqrt(1-phi^2) * sum_{k=0..L} phi^k * innov(seed, d-k)
+ * where innov(seed, absDay) is a deterministic N(0,1) keyed by the absolute day.
+ * The sqrt(1-phi^2) NORMALIZES the sum's variance so the marginal sigma is exactly
+ * the calibrated value (without it, variance inflates by 1/(1-phi^2) ~ 14% at
+ * phi=0.35, breaking the within-person SD the diff matches).
+ * `marginalSigma` is in the working space (#17): log-space sigma for logSpace.
  */
-function ar1Series(rng: Rng, nDays: number, level: number, marginalSigma: number, phi: number, logSpace: boolean): number[] {
+/** Memoized deterministic N(0,1) innovation stream keyed by absolute day. Extracted
+ *  so two metrics' innovations can be CORRELATED (see generate()) — the innovation is
+ *  the natural place, since correlating it leaves each marginal untouched. */
+function makeInnov(base: Rng, metric: string): (absDay: number) => number {
+  const cache = new Map<number, number>();
+  return (absDay: number): number => {
+    let v = cache.get(absDay);
+    if (v === undefined) {
+      v = base.fork(`innov:${metric}:${absDay}`).normalStd();
+      cache.set(absDay, v);
+    }
+    return v;
+  };
+}
+
+function latentSeries(days: number[], level: number, marginalSigma: number, phi: number, logSpace: boolean, innov: (absDay: number) => number, episode: (dayMs: number) => number): number[] {
   const mu = logSpace ? Math.log(level) : level;
-  const innov = marginalSigma * Math.sqrt(Math.max(0, 1 - phi * phi));
-  const out: number[] = [];
-  let x = rng.normal(mu, marginalSigma);
-  for (let d = 0; d < nDays; d++) {
-    if (d > 0) x = mu + phi * (x - mu) + rng.normal(0, innov);
-    out.push(logSpace ? Math.exp(x) : x);
-  }
-  return out;
+  const norm = marginalSigma * Math.sqrt(Math.max(0, 1 - phi * phi));
+  return days.map((dayMs) => {
+    const d = Math.floor(dayMs / DAY_MS);
+    let sum = 0;
+    let pk = 1;
+    for (let k = 0; k <= AR1_LOOKBACK; k++) {
+      sum += pk * innov(d - k);
+      pk *= phi;
+    }
+    const x = mu + norm * sum;
+    return (logSpace ? Math.exp(x) : x) * episode(dayMs);
+  });
 }
 
 /** Log-space sigma of a lognormal with the given coefficient of variation. */
@@ -125,8 +152,12 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
   const base = new Rng(profile.seed);
   const fromMs = utcMidnight(Date.parse(range.from));
   const toMs = utcMidnight(Date.parse(range.to));
+  // Emit one day BEFORE the range too: a day's night crosses midnight (23:00 ->
+  // 07:00), so the morning samples in [from, from+7h) are produced by the previous
+  // day's emission. We generate [from-1day, to) and filter to [from, to) at the end,
+  // so which morning samples appear never depends on the requested range (P5).
   const days: number[] = [];
-  for (let d = fromMs; d < toMs; d += DAY_MS) days.push(d);
+  for (let d = fromMs - DAY_MS; d < toMs; d += DAY_MS) days.push(d);
   const nDays = days.length;
 
   // ---- resolve per-user physiology (between-person draws from the population) ----
@@ -172,54 +203,36 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
   const producesVO2Max = uRng.fork("vo2").next() >= vo2AbsentProb;
   const traits = { userHrvMedian, userRhrLevel, activityLevel, producesVO2Max };
 
-  // ---- latent daily series (whole range, before the day loop) ----
-  const hrvLatent = ar1Series(base.fork("latent:hrv"), nDays, userHrvMedian, cvToLogSigma(hrvP.within_person.cv), hrvP.within_person.lag1_autocorr, true);
-  const rhrLatent = ar1Series(base.fork("latent:rhr"), nDays, userRhrLevel, rhrP.within_person.daily_mean_sd, rhrP.within_person.lag1_autocorr, false);
-  for (let d = 0; d < nDays; d++) {
-    hrvLatent[d] *= episodeFactor(profile, "HeartRateVariabilitySDNN", days[d]);
-    rhrLatent[d] *= episodeFactor(profile, "RestingHeartRate", days[d]);
-  }
+  // ---- latent daily series: ABSOLUTE-EPOCH, range-independent (property P5) ----
+  // HRV and RHR co-move (shared parasympathetic drive; HRV is derived from RR
+  // intervals). Correlate their latent AR(1) INNOVATIONS with the calibrated negative
+  // rho: RHR's innovation = rho*z_hrv + sqrt(1-rho^2)*z_rhr, which stays N(0,1) so
+  // both marginals are untouched, but a low-HRV day now tends to be a high-RHR day.
+  const rho = innovationCorr("HeartRateVariabilitySDNN", "RestingHeartRate");
+  const innovHrv = makeInnov(base, "hrv");
+  const innovRhrOwn = makeInnov(base, "rhr");
+  const co = Math.sqrt(Math.max(0, 1 - rho * rho));
+  const innovRhr = (absDay: number) => rho * innovHrv(absDay) + co * innovRhrOwn(absDay);
+  const hrvLatent = latentSeries(days, userHrvMedian, cvToLogSigma(hrvP.within_person.cv), hrvP.within_person.lag1_autocorr, true, innovHrv, (dm) => episodeFactor(profile, "HeartRateVariabilitySDNN", dm));
+  const rhrLatent = latentSeries(days, userRhrLevel, rhrP.within_person.daily_mean_sd, rhrP.within_person.lag1_autocorr, false, innovRhr, (dm) => episodeFactor(profile, "RestingHeartRate", dm));
 
-  // ---- wear: night vs day, SEPARATE Bernoullis (calibration wear_model) ----
-  // TODO(streakiness): these are independent per-day/night draws and cannot
-  // reproduce the source's ~2-month outage; a 2-state run-length model is deferred
-  // (see wear_model.streakiness).
+  // ---- wear: night vs day, per ABSOLUTE day so it's range-independent ----
+  // TODO(streakiness): independent per-day/night draws can't reproduce the ~2-month
+  // outage; a 2-state run-length model is deferred (see wear_model.streakiness).
   const wm = WEAR_MODEL;
-  const dayRng = base.fork("wear:day");
-  const nightRng = base.fork("wear:night");
-  const dayWorn = days.map(() => dayRng.next() < wm.day.wear_prob);
-  const nightWorn = days.map(() => nightRng.next() < wm.night.wear_prob);
+  const dayWorn = days.map((dm) => base.fork(`wear:day:${Math.floor(dm / DAY_MS)}`).next() < wm.day.wear_prob);
+  const nightWorn = days.map((dm) => base.fork(`wear:night:${Math.floor(dm / DAY_MS)}`).next() < wm.night.wear_prob);
 
-  // ---- emission ----
-  const samples: GenSample[] = [];
-  const idRng = base.fork("uuid");
+  // ---- emission: every per-day rng (uuids, values, lags) is keyed to the ABSOLUTE
+  // day, so a given calendar day's samples are byte-identical across any range. ----
+  const emitted: GenSample[] = []; // filtered to [from, to) after the loop
   const rhrConf = confoundFactor(profile, "RestingHeartRate");
   const hrvConf = confoundFactor(profile, "HeartRateVariabilitySDNN");
   const hrvRec = recording("HeartRateVariabilitySDNN");
   const hrRec = recording("HeartRate");
-
-  const emit = (key: string, value: number, startMs: number, endMs: number, r: Rng, lagBucket: { p50: number; p90: number; p95: number }) => {
-    const def = REGISTRY[key];
-    samples.push({
-      uuid: deterministicUuid(idRng),
-      metricKey: key, identifier: def.identifier, unit: def.unit,
-      value: Math.round(value * 10) / 10,
-      startMs, endMs,
-      creationMs: startMs + Math.round(lagSeconds(r, lagBucket) * 1000),
-      sourceName: SOURCE, retractedAtMs: null,
-    });
-  };
-
-  const eRhr = base.fork("emit:rhr");
-  const eHrv = base.fork("emit:hrv");
-  const eHr = base.fork("emit:hr");
   const lagRhr = deviceBehavior("RestingHeartRate").arrival_lag_seconds;
   const lagHrv = deviceBehavior("HeartRateVariabilitySDNN").arrival_lag_seconds;
   const lagHr = deviceBehavior("HeartRate").arrival_lag_seconds;
-
-  const emitHr = (v: number, s: number, e: number) => emit("HeartRate", v, s, e, eHr, lagHr);
-  const emitHrvAt = (t: number, latent: number) =>
-    emit("HeartRateVariabilitySDNN", latent * Math.exp(eHrv.normal(0, 0.08)) * hrvConf, t, t + 60_000, eHrv, lagHrv);
 
   for (let d = 0; d < nDays; d++) {
     const day = days[d];
@@ -227,36 +240,63 @@ export function generate(profile: PhysiologyProfile, range: DateRange): Generate
     const nOn = nightWorn[d];
     if (!dOn && !nOn) continue; // fully unworn -> empty (no zero-valued samples)
 
-    // Heart rate records whenever WORN (no stillness gate). Daytime = two-regime
-    // (background + activity bursts); overnight = background only (asleep, still).
+    const ad = Math.floor(day / DAY_MS);
+    const idRng = base.fork(`uuid:${ad}`); // consumed in a fixed per-day emission order
+    const eHr = base.fork(`emit:hr:${ad}`);
+    const eHrv = base.fork(`emit:hrv:${ad}`);
+    const eRhr = base.fork(`emit:rhr:${ad}`);
+    const emit = (key: string, value: number, startMs: number, endMs: number, r: Rng, lagBucket: { p50: number; p90: number; p95: number }) => {
+      const def = REGISTRY[key];
+      emitted.push({
+        uuid: deterministicUuid(idRng),
+        metricKey: key, identifier: def.identifier, unit: def.unit,
+        value: Math.round(value * 10) / 10,
+        startMs, endMs,
+        creationMs: startMs + Math.round(lagSeconds(r, lagBucket) * 1000),
+        sourceName: SOURCE, retractedAtMs: null,
+      });
+    };
+    const emitHr = (v: number, s: number, e: number) => emit("HeartRate", v, s, e, eHr, lagHr);
+    const emitHrvAt = (t: number, latent: number) => emit("HeartRateVariabilitySDNN", latent * Math.exp(eHrv.normal(0, 0.08)) * hrvConf, t, t + 60_000, eHrv, lagHrv);
+
+    // HR records whenever WORN. Day = two-regime; night = background (asleep). The
+    // intraday OU is anchored per absolute day; the cross-midnight discontinuity is
+    // exp(-5)=0.007 at the 300s background cadence with tau=60s -- below the noise
+    // floor, so restarting the OU each day/night is fine, not an oversight.
     if (dOn) emitHeartRateDay(eHr, day, rhrLatent[d], activityLevel, hrRec, emitHr);
     if (nOn) emitHeartRateNight(eHr, day, rhrLatent[d], hrRec, emitHr);
-
-    // HRV is still-gated -> Poisson (exponential gaps) at a per-hour rate; night is
-    // denser than day because sleep is stillest. Night window crosses midnight.
     if (dOn) emitHrvPoisson(eHrv, day, wm.day.hours[0], wm.day.hours[1], hrvRec.day_gate_per_hour!, (t) => emitHrvAt(t, hrvLatent[d]));
     if (nOn) emitHrvPoisson(eHrv, day, wm.night.hours[0], wm.night.hours[1] + 24, hrvRec.night_gate_per_hour!, (t) => emitHrvAt(t, hrvLatent[d]));
-
-    // Resting HR: a computed DAILY SUMMARY, present iff the day had quiet coverage
-    // (i.e. worn at all), emitted end-of-day at the calibrated ~17h+ arrival lag.
     if (dOn || nOn) emit("RestingHeartRate", rhrLatent[d] * rhrConf + eRhr.normal(0, 0.5), day, day + Math.round(13.5 * 3600_000), eRhr, lagRhr);
   }
 
-  // ---- backfill event: a batch of old samples arriving at once (#6) ----
-  const bfRng = base.fork("backfill");
-  if (bfRng.next() < CHANGE_LOG.backfill_event.probability_per_generation && nDays > 5) {
-    const restoreMs = days[bfRng.int(Math.floor(nDays / 2), nDays - 1)] + 12 * 3600_000;
-    const windowStart = restoreMs - CHANGE_LOG.backfill_event.max_lag_days * DAY_MS;
-    for (const s of samples) {
-      if (s.startMs >= windowStart && s.startMs < restoreMs) s.creationMs = restoreMs;
+  // Keep only samples whose startDate is in the requested window; the extra
+  // pre-range day contributed morning samples, and the last day's night may have
+  // spilled past `to` -- both are trimmed here so the result is exactly [from, to).
+  const samples = emitted.filter((s) => s.startMs >= fromMs && s.startMs < toMs);
+
+  // ---- backfill: keyed to ABSOLUTE dates (range-independent). A rare device-restore
+  // re-stamps a window of already-recorded samples' arrival to one instant. Evaluated
+  // per absolute day from the seed. We scan a max_lag_days buffer on BOTH sides of the
+  // range: a restore just AFTER the range still re-stamps late in-range samples (a
+  // restore delivers PAST data), and events with no overlapping window are no-ops. ----
+  const bf = CHANGE_LOG.backfill_event;
+  const perDay = bf.events_per_year / 365;
+  const minAd = Math.floor(fromMs / DAY_MS);
+  const maxAd = Math.floor((toMs - DAY_MS) / DAY_MS);
+  for (let ad = minAd - bf.max_lag_days; ad <= maxAd + bf.max_lag_days; ad++) {
+    if (base.fork(`backfill:${ad}`).next() < perDay) {
+      const restoreMs = ad * DAY_MS + 12 * 3600_000;
+      const winStart = restoreMs - bf.max_lag_days * DAY_MS;
+      for (const s of samples) if (s.startMs >= winStart && s.startMs < restoreMs) s.creationMs = restoreMs;
     }
   }
 
-  // ---- retractions: a small fraction deleted later, each with its own time (#4) ----
-  const rRng = base.fork("retract");
+  // ---- retractions: per-sample, keyed by UUID (range-independent) (#4) ----
   for (const s of samples) {
-    if (rRng.next() < CHANGE_LOG.retraction_rate) {
-      s.retractedAtMs = s.creationMs + Math.round(rRng.lognormalMedianCv(DAY_MS, 0.5));
+    const rr = base.fork(`retract:${s.uuid}`);
+    if (rr.next() < CHANGE_LOG.retraction_rate) {
+      s.retractedAtMs = s.creationMs + Math.round(rr.lognormalMedianCv(DAY_MS, 0.5));
     }
   }
 

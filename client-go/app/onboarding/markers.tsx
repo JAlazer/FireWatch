@@ -12,9 +12,12 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { STORAGE_KEY_USER_ID } from "@/constants/config";
-import { useHealthDataProviderContext } from "@/providers/HealthDataProviderContext";
-import { createLifestyle, createUser, saveBiometrics } from "@/services/api";
+import { createLifestyle, createUser } from "@/services/api";
 import type { LifestyleProfileCreate } from "@/types/api";
+import { completeOnboarding } from "@/src/onboarding/completeOnboarding";
+import { rawToLifestyle, rawToOnboarding, type RawOnboardingAnswers } from "@/src/onboarding/projections";
+import { asyncStorageAdapter } from "@/src/storage/asyncStorage";
+import { newSeed } from "@/src/storage/onboardingStore";
 
 // Markers shown to everyone, regardless of what they picked on Screen 1.
 const ALWAYS_MARKERS = ["Heart rate variability", "Resting heart rate"];
@@ -60,51 +63,24 @@ const MED_TYPE_MARKERS: Record<string, string[]> = {
 // HRV + Resting HR. Confirmed 2026-07 (kept after HRV/RHR became universal).
 const DEFAULT_MARKERS = ["Sleep", "Steps"];
 
-// --- Mapping this screen's answers onto LifestyleProfileCreate ---
-// The backend's fields are scales/enums (perceived_stress_level: 1-10,
-// smoking_status: never/former/current, alcohol_consumption: none/light/
-// moderate/heavy) that predate this simplified onboarding, so these
-// translate what's collected here into that shape.
+// The wire-format mappers (answers -> LifestyleProfileCreate) now live in
+// src/onboarding/projections.ts (rawToLifestyle), alongside the canonical
+// on-device projection, so the two shapes are defined together.
 
-// Tiers map to a representative point on the 1-10 scale rather than a range,
-// since the backend only stores a single number.
-function mapStressLevel(level: string | null): number {
-  switch (level) {
-    case "Low":
-      return 3;
-    case "Moderate":
-      return 6;
-    case "High":
-      return 9;
-    default:
-      return 5; // no stress level given — neutral default
-  }
-}
-
-// This onboarding only asks "do you currently smoke, and how often" — it
-// can't distinguish a former smoker from someone who's never smoked, so "no"
-// maps to "never" rather than attempting to guess "former".
-function mapSmokingStatus(smokes: boolean): LifestyleProfileCreate["smoking_status"] {
-  return smokes ? "current" : "never";
-}
-
-// Frequency (occasionally/weekly/daily) stands in for the backend's
-// none/light/moderate/heavy scale.
-function mapAlcoholConsumption(
-  drinks: boolean,
-  frequency: string | null,
-): LifestyleProfileCreate["alcohol_consumption"] {
-  if (!drinks) return "none";
-  switch (frequency) {
-    case "Occasionally":
-      return "light";
-    case "Weekly":
-      return "moderate";
-    case "Daily":
-      return "heavy";
-    default:
-      return "light";
-  }
+// DORMANT server sync — fire-and-forget (see completeOnboarding), never blocks
+// completion. Kept wired for when the server can hold a real time series.
+//
+// saveBiometrics is DROPPED here (not swapped to the new provider): the 6-field
+// BiometricsCreate is SUPERSEDED by the narrow BIOMETRICS schema (metric_type,
+// healthkit_sample_uuid, start_at/end_at) — the FastAPI code lagging the DB design,
+// not us overriding it. The tabs get biometrics from buildProvider in 6b instead.
+//
+// createUser uses a placeholder identity (no sign-up step yet) — replaced once
+// login (Clerk) feeds a real account into onboarding.
+async function syncToServer(lifestyle: LifestyleProfileCreate): Promise<void> {
+  const user = await createUser({ name: "FireWatch User", email: "user@firewatch.app" });
+  await createLifestyle(user.user_id, lifestyle);
+  await AsyncStorage.setItem(STORAGE_KEY_USER_ID, user.user_id);
 }
 
 // The icon shown next to each possible marker.
@@ -135,14 +111,14 @@ function MarkerRow({ name, color }: { name: string; color: string }) {
 export default function Screen2() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const provider = useHealthDataProviderContext();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Everything carried over from Screen 1.
-  const { selected, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
+  // Everything carried over from Screen 1. birthDate (not age) so it can't rot.
+  const { selected, birthDate, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
     useLocalSearchParams<{
       selected?: string;
+      birthDate?: string;
       stressLevel?: string;
       sickTypes?: string;
       medTypes?: string;
@@ -180,69 +156,49 @@ export default function Screen2() {
   let caveat: string | null = null;
   if (sick && meds) {
     caveat =
-      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged can change how heart-rate signals should be read. We'll keep both in mind.";
+      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged shapes your baseline heart-rate signals — your readings are taken on that medicated baseline, so we read them in that context. We'll keep both in mind.";
   } else if (sick) {
     caveat =
       "Heads up: a recent illness can make some of these readings noisier for a while. We'll keep that in mind.";
   } else if (meds) {
     caveat =
-      "Heads up: a medication you flagged can change how heart-rate signals should be read. We'll keep that in mind.";
+      "Heads up: a medication you flagged (like a beta-blocker) shapes your baseline heart-rate signals. Your readings are taken on that medicated baseline, so we read them in that context rather than as a distortion. We'll keep that in mind.";
   }
 
   async function handleFinish() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // This onboarding doesn't collect a name/email (no separate signup
-      // step exists yet), so this mirrors the placeholder the old
-      // OnboardingContext used. Swap this out once there's a real
-      // sign-up/account step feeding into onboarding.
-      const user = await createUser({
-        name: "FireWatch User",
-        email: "user@firewatch.app",
-      });
-
-      // A new user has no biometrics on record yet, and /inflammation 404s
-      // without one. Pull the same "latest biometrics" the dashboard/
-      // insights tabs already read from (currently MockHealthDataProvider's
-      // synthetic 14-day snapshot; swaps to real HealthKit data for free
-      // once HealthKitProvider is implemented) — this also keeps the
-      // inflammation score consistent with what those tabs show.
-      const biometrics = await provider.getLatestBiometrics();
-      await saveBiometrics(user.user_id, biometrics);
-
-      const lifestylePayload: LifestyleProfileCreate = {
-        // Not asked about in this onboarding yet — placeholder until there's
-        // a real diet question. "moderate" sits in the middle of the
-        // five-point scale so it doesn't skew the inflammation score toward
-        // either extreme in the meantime.
-        diet: "moderate",
-        has_autoimmune_condition: chosen.has("autoimmune"),
-        smoking_status: mapSmokingStatus(chosen.has("smokes")),
-        alcohol_consumption: mapAlcoholConsumption(
-          chosen.has("drinks"),
-          parsedDrinkTypes[0] ?? null,
-        ),
-        medications: parsedMedTypes,
-        perceived_stress_level: mapStressLevel(parsedStressLevel),
-        // Not collected by this onboarding at all — defaulted until/unless
-        // a question gets added for these. Flagging rather than guessing
-        // silently: activity_level, works_shift_work,
-        // family_history_autoimmune, and currently_in_flare have no UI here.
-        activity_level: "moderate",
-        works_shift_work: false,
-        family_history_autoimmune: false,
-        currently_in_flare: false,
+      const raw: RawOnboardingAnswers = {
+        // birthDate is guaranteed by Screen 1 (Continue is disabled until an age is
+        // picked). Fallback only guards a routing bug; it never fabricates silently
+        // in the normal flow.
+        birthDate: birthDate ?? `${new Date().getUTCFullYear() - 40}-01-01`,
+        autoimmune: chosen.has("autoimmune"),
+        stressLevel: parsedStressLevel,
+        smokes: chosen.has("smokes"),
+        drinks: chosen.has("drinks"),
+        drinkFrequency: parsedDrinkTypes[0] ?? null,
+        sickTypes: parsedSickTypes,
+        medTypes: parsedMedTypes,
       };
 
-      await createLifestyle(user.user_id, lifestylePayload);
-      await AsyncStorage.setItem(STORAGE_KEY_USER_ID, user.user_id);
+      // LOCAL save is the SOURCE OF TRUTH — the on-device generator needs the
+      // canonical profile to produce anything, so completion must not depend on the
+      // dev server. The server POST is fire-and-forget below (never blocks).
+      //
+      // NOTE: OnboardingContext.tsx is currently UNMOUNTED (groundwork for Clerk
+      // login, not ours to touch). THIS screen is the live onboarding-completion
+      // path — don't add completion logic there.
+      await completeOnboarding(asyncStorageAdapter, rawToOnboarding(raw, { seed: newSeed() }), {
+        server: () => syncToServer(rawToLifestyle(raw)),
+      });
 
       router.replace("/(tabs)/dashboard");
     } catch (err) {
-      setSubmitError(
-        err instanceof Error ? err.message : "Something went wrong finishing setup.",
-      );
+      // Only a LOCAL persistence failure can reach here now — the server is
+      // non-blocking, so "server down" no longer wedges onboarding.
+      setSubmitError(err instanceof Error ? err.message : "Couldn't save your profile on this device.");
     } finally {
       setSubmitting(false);
     }
