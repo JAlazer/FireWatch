@@ -11,9 +11,12 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { STORAGE_KEY_USER_ID } from "@/constants/config";
-import { useHealthDataProviderContext } from "@/providers/HealthDataProviderContext";
-import { createLifestyle, createUser, saveBiometrics } from "@/services/api";
+import { createLifestyle, createUser } from "@/services/api";
 import type { LifestyleProfileCreate } from "@/types/api";
+import { completeOnboarding } from "@/src/onboarding/completeOnboarding";
+import { rawToLifestyle, rawToOnboarding, type RawOnboardingAnswers } from "@/src/onboarding/projections";
+import { asyncStorageAdapter } from "@/src/storage/asyncStorage";
+import { newSeed } from "@/src/storage/onboardingStore";
 import { approximateBirthDate, mapDrinkingFrequency, mapSmokingFrequency, mapStressLevel } from "@/utils";
 import MarkerRow from "@/components/onboarding/MarkerRow";
 
@@ -61,37 +64,62 @@ const MED_TYPE_MARKERS: Record<string, string[]> = {
 // HRV + Resting HR. Confirmed 2026-07 (kept after HRV/RHR became universal).
 const DEFAULT_MARKERS = ["Sleep", "Steps"];
 
-// Stable marker codes, matching BIOMETRICS.metric_type in
-// firewatch-schema.mermaid — this is what actually gets persisted in
-// tracked_markers, decoupled from the UI's display labels above so a future
-// copy change doesn't change what's stored.
-const MARKER_CODES: Record<string, string> = {
-  "Heart rate variability": "hrv",
-  "Resting heart rate": "resting_hr",
-  "Skin temperature": "body_temp",
-  "Respiratory rate": "resp_rate",
-  Sleep: "sleep_stage",
-  "Blood oxygen": "spo2",
-  Steps: "steps",
+// The wire-format mappers (answers -> LifestyleProfileCreate) now live in
+// src/onboarding/projections.ts (rawToLifestyle), alongside the canonical
+// on-device projection, so the two shapes are defined together.
+
+// DORMANT server sync — fire-and-forget (see completeOnboarding), never blocks
+// completion. Kept wired for when the server can hold a real time series.
+//
+// saveBiometrics is DROPPED here (not swapped to the new provider): the 6-field
+// BiometricsCreate is SUPERSEDED by the narrow BIOMETRICS schema (metric_type,
+// healthkit_sample_uuid, start_at/end_at) — the FastAPI code lagging the DB design,
+// not us overriding it. The tabs get biometrics from buildProvider in 6b instead.
+//
+// createUser uses a placeholder identity (no sign-up step yet) — replaced once
+// login (Clerk) feeds a real account into onboarding.
+async function syncToServer(lifestyle: LifestyleProfileCreate): Promise<void> {
+  const user = await createUser({ name: "FireWatch User", email: "user@firewatch.app" });
+  await createLifestyle(user.user_id, lifestyle);
+  await AsyncStorage.setItem(STORAGE_KEY_USER_ID, user.user_id);
+}
+
+// The icon shown next to each possible marker.
+const MARKER_ICONS: Record<
+  string,
+  keyof typeof MaterialCommunityIcons.glyphMap
+> = {
+  "Heart rate variability": "heart-pulse",
+  "Resting heart rate": "heart-outline",
+  "Skin temperature": "thermometer",
+  "Respiratory rate": "lungs",
+  Sleep: "moon-waning-crescent",
+  "Blood oxygen": "water-percent",
+  Steps: "walk",
 };
 
-
-
-
+// One non-interactive marker row (display only). `color` tints the icon:
+// neutral for the always markers, the app's accent for the personalized ones.
+function MarkerRow({ name, color }: { name: string; color: string }) {
+  return (
+    <View style={styles.markerRow}>
+      <MaterialCommunityIcons name={MARKER_ICONS[name]} size={22} color={color} />
+      <Text style={styles.markerText}>{name}</Text>
+    </View>
+  );
+}
 
 export default function Screen2() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const provider = useHealthDataProviderContext();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
- 
-  // Everything carried over from Screen 1. `age` wasn't previously read here
-  // even though Screen 1 sent it — needed now for approximateBirthDate().
-  const { selected, age, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
+
+  // Everything carried over from Screen 1. birthDate (not age) so it can't rot.
+  const { selected, birthDate, stressLevel, sickTypes, medTypes, smokeTypes, drinkTypes } =
     useLocalSearchParams<{
       selected?: string;
-      age?: string;
+      birthDate?: string;
       stressLevel?: string;
       sickTypes?: string;
       medTypes?: string;
@@ -136,75 +164,49 @@ export default function Screen2() {
   let caveat: string | null = null;
   if (sick && meds) {
     caveat =
-      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged can change how heart-rate signals should be read. We'll keep both in mind.";
+      "Heads up: a recent illness can make some readings noisier for a while, and a medication you flagged shapes your baseline heart-rate signals — your readings are taken on that medicated baseline, so we read them in that context. We'll keep both in mind.";
   } else if (sick) {
     caveat =
       "Heads up: a recent illness can make some of these readings noisier for a while. We'll keep that in mind.";
   } else if (meds) {
     caveat =
-      "Heads up: a medication you flagged can change how heart-rate signals should be read. We'll keep that in mind.";
+      "Heads up: a medication you flagged (like a beta-blocker) shapes your baseline heart-rate signals. Your readings are taken on that medicated baseline, so we read them in that context rather than as a distortion. We'll keep that in mind.";
   }
  
   async function handleFinish() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // This onboarding doesn't collect a name/email (no separate signup
-      // step exists yet), so this mirrors the placeholder the old
-      // OnboardingContext used. Swap this out once there's a real
-      // sign-up/account step feeding into onboarding.
-      const user = await createUser({
-        name: "FireWatch User",
-        email: "user@firewatch.app",
-      });
- 
-      // A new user has no biometrics on record yet, and /inflammation 404s
-      // without one. Pull the same "latest biometrics" the dashboard/
-      // insights tabs already read from (currently MockHealthDataProvider's
-      // synthetic 14-day snapshot; swaps to real HealthKit data for free
-      // once HealthKitProvider is implemented) — this also keeps the
-      // inflammation score consistent with what those tabs show.
-      const biometrics = await provider.getLatestBiometrics();
-      await saveBiometrics(user.user_id, biometrics);
- 
-      const lifestylePayload: LifestyleProfileCreate = {
-        birth_date: approximateBirthDate(age),
-        // Not collected anywhere in this onboarding yet — no question or
-        // HealthKit read exists. Placeholder until one does, same pattern
-        // as `diet` below.
-        biological_sex: "not_applicable",
-        stress_level: mapStressLevel(parsedStressLevel),
-        smoking_frequency: mapSmokingFrequency(parsedSmokeTypes[0] ?? null),
-        drinking_frequency: mapDrinkingFrequency(parsedDrinkTypes[0] ?? null),
-        // Not asked about in this onboarding yet — placeholder until there's
-        // a real diet question. DietSelector.tsx already exists and targets
-        // this exact type but isn't wired into either screen yet. "moderate"
-        // sits in the middle of the five-point scale so it doesn't skew the
-        // inflammation score toward either extreme in the meantime.
-        diet: "moderate",
-        sick_types: parsedSickTypes,
-        med_types: parsedMedTypes,
-        tracked_markers: trackedMarkerCodes,
-        // Should eventually reflect the actual OS-level HealthKit
-        // authorization response (per signal), not be invented client-side.
-        // Defaulting every tracked signal to true as a placeholder.
-        healthkit_permissions: Object.fromEntries(
-          trackedMarkerCodes.map((code) => [code, true]),
-        ),
-        // Schema gap: firewatch-schema.mermaid's LIFESTYLE table has no
-        // column for this yet. See the comment on this field in
-        // types/api.ts for the reasoning and the open decision.
-        has_autoimmune_condition: chosen.has("autoimmune"),
+      const raw: RawOnboardingAnswers = {
+        // birthDate is guaranteed by Screen 1 (Continue is disabled until an age is
+        // picked). Fallback only guards a routing bug; it never fabricates silently
+        // in the normal flow.
+        birthDate: birthDate ?? `${new Date().getUTCFullYear() - 40}-01-01`,
+        autoimmune: chosen.has("autoimmune"),
+        stressLevel: parsedStressLevel,
+        smokes: chosen.has("smokes"),
+        drinks: chosen.has("drinks"),
+        drinkFrequency: parsedDrinkTypes[0] ?? null,
+        sickTypes: parsedSickTypes,
+        medTypes: parsedMedTypes,
       };
- 
-      await createLifestyle(user.user_id, lifestylePayload);
-      await AsyncStorage.setItem(STORAGE_KEY_USER_ID, user.user_id);
- 
+
+      // LOCAL save is the SOURCE OF TRUTH — the on-device generator needs the
+      // canonical profile to produce anything, so completion must not depend on the
+      // dev server. The server POST is fire-and-forget below (never blocks).
+      //
+      // NOTE: OnboardingContext.tsx is currently UNMOUNTED (groundwork for Clerk
+      // login, not ours to touch). THIS screen is the live onboarding-completion
+      // path — don't add completion logic there.
+      await completeOnboarding(asyncStorageAdapter, rawToOnboarding(raw, { seed: newSeed() }), {
+        server: () => syncToServer(rawToLifestyle(raw)),
+      });
+
       router.replace("/(tabs)/dashboard");
     } catch (err) {
-      setSubmitError(
-        err instanceof Error ? err.message : "Something went wrong finishing setup.",
-      );
+      // Only a LOCAL persistence failure can reach here now — the server is
+      // non-blocking, so "server down" no longer wedges onboarding.
+      setSubmitError(err instanceof Error ? err.message : "Couldn't save your profile on this device.");
     } finally {
       setSubmitting(false);
     }
@@ -270,8 +272,7 @@ export default function Screen2() {
   );
 }
 
-
-export const styles = StyleSheet.create({
+const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F7F7F7" },
   scroll: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
 

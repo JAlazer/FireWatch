@@ -46,7 +46,8 @@ export interface Confound {
 
 export interface PhysiologyProfile {
   seed: string; // stable per-user; drives ALL determinism incl. UUIDs
-  age: number; // for age-conditioned centroids
+  age: number; // for age-conditioned centroids — resolved from birthDate once, at build
+  birthDate?: ISODate; // source of truth for age; carried so getDateOfBirth is exact
 
   /**
    * Peak heart-rate excursion above resting, in bpm (fitness/activity level).

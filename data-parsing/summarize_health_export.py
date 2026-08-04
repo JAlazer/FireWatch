@@ -301,6 +301,8 @@ def main():
             "sample_duration_seconds": dist(duration_samples[t]),
             "arrival_lag_seconds": dist(lag_samples[t]),
             "intra_day_gap_seconds": dist(gaps),
+            # Stable dense-share stat (gap p50 is a knife-edge at f~0.5).
+            "gaps_under_10s_pct": round(100 * sum(1 for g in gaps if g < 10) / len(gaps), 1) if gaps else None,
             "_gap_days_sampled": len(gap_days[t]),
         }
 

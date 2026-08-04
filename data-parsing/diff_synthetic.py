@@ -28,10 +28,15 @@ def get(t, path):
     return cur
 
 
+# NOTE: intra_gap p50 is a KNIFE-EDGE stat for HeartRate — it sits at ~6s only when
+# dense samples exceed 50% of the total, so at f~0.5 it flips between the 5s (dense)
+# and ~300s (background) regimes on tiny perturbations. Prefer a stable equivalent
+# ("fraction of gaps < 10s") which measures the same dense-share without the jump.
 ROWS = [
     ("records/day p50", "records_per_day.p50"),
     ("intra_gap p50", "intra_day_gap_seconds.p50"),
     ("intra_gap p95", "intra_day_gap_seconds.p95"),
+    ("gaps <10s %", "gaps_under_10s_pct"),  # stable dense-share (prefer over p50)
     ("arrival p50", "arrival_lag_seconds.p50"),
     ("arrival p90", "arrival_lag_seconds.p90"),
     ("value p50", "value.p50"),

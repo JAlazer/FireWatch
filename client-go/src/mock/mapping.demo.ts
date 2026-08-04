@@ -22,7 +22,7 @@ const FLARE_END = 52;
 
 const onboarding: OnboardingProfile = {
   seed: "ra-demo",
-  age: 40,
+  birthDate: "1986-01-01", // ~age 40 as-of the range end
   autoimmune: true,
   explicitEpisodes: [{
     from: addDays(range.from, FLARE_START),

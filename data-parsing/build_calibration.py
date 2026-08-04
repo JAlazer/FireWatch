@@ -294,7 +294,7 @@ def main():
     enabled = [k for k, v in REGISTRY.items() if v["enabled"]]
 
     out = {
-        "schema_version": "0.7.0",
+        "schema_version": "0.8.0",
         "_schema": {
             "source": "'calibrated' = measured from a real export summary; 'synthesized' = not measured (literature or assumption).",
             "tag": "only on synthesized values: 'literature' = a specific published figure/citation is given in _basis; 'assumed' = an engineering judgment or placeholder, not a cited number.",
@@ -359,8 +359,8 @@ def main():
             "retraction_rate": 0.005,
             "_retraction_basis": "assumed ~0.5% of samples later deleted (HealthKit deletes/duplicates happen). Placeholder.",
             "backfill_event": {
-                "probability_per_generation": 0.05, "max_lag_days": 30,
-                "_basis": "assumed: a rare device-restore backfill delivers old records at once. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one.",
+                "events_per_year": 0.05, "max_lag_days": 30,
+                "_basis": "assumed: a rare device-restore backfill delivers old records at once. Rate is PER YEAR (renamed from probability_per_generation, which is meaningless now that generation is range-invariant): each absolute day fires with prob events_per_year/365, evaluated deterministically from the seed; a max_lag_days buffer on both sides of the range keeps it range-independent. Bounded on purpose -- the export's 5.6yr max lag is an outlier we do NOT size from; sync code must merely survive one.",
             },
         },
         # Wear is night-vs-day, then a per-metric recording gate conditional on
@@ -469,6 +469,25 @@ def main():
         "total_asleep_minutes": {"distribution": "normal", "mean": 420, "sd": 55,
                                   "_basis": "literature: adult ~7h; observed p50 here is a consistency check."},
         "observed_sanity_check": {"asleep_min_per_staged_night_p50": (sl.get("total_asleep_minutes_per_staged_night") or {}).get("p50")},
+    }
+
+    # Cross-metric coupling. Measured OUT OF BAND by correlate_hrv_rhr.py, because
+    # the summary input here does not retain the paired daily series needed for a
+    # within-person correlation. Value is the recent-12mo within-person Pearson r of
+    # daily-mean HRV vs daily RestingHeartRate; applied in the generator as the
+    # correlation of the two latent AR(1) innovations (negative -> low-HRV days are
+    # high-RHR days). See data-parsing/correlate_hrv_rhr.py to reproduce.
+    out["metric_coupling"] = {
+        "source": "calibrated",
+        "HeartRateVariabilitySDNN__RestingHeartRate": {
+            "innovation_corr": -0.51,
+            "daily_mean_corr": -0.513,
+            "daily_mean_corr_log_hrv": -0.529,
+            "detrended_corr_28d": -0.470,
+            "n_pairs": 262,
+            "window": "recent 12mo",
+            "_note": "Within-person r, daily-mean HRV(SDNN) vs daily RestingHeartRate; applied as the correlation of the two latent AR(1) innovations (preserves both marginals). Holds under 28d detrend, so not a slow common trend.",
+        },
     }
 
     with open(args.out, "w") as f:
