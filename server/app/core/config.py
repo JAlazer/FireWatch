@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # the back-and-forth on this so far).
     database_url: str = Field(validation_alias="TIMESCALE_SERVICE_URL")
 
+    # Needed again after being removed alongside Alembic (that removal was
+    # about migration tooling specifically, not sync-vs-async in general).
+    # The users/biometrics/lifestyle repos are staying SYNCHRONOUS to match
+    # the rest of the app's existing pattern — only inflammation is async —
+    # so they need a psycopg2-driver URL, not asyncpg's. Derived
+    # automatically from database_url so you still only maintain one value
+    # day-to-day.
+    database_url_sync: str | None = None
+
     environment: str = "development"
 
     @field_validator("database_url")
@@ -51,6 +60,16 @@ class Settings(BaseSettings):
             v = "postgresql+asyncpg://" + v[len("postgres://"):]
         v = v.replace("sslmode=require", "ssl=require").replace("sslmode=verify-full", "ssl=verify-full")
         return v
+
+    @property
+    def sync_database_url(self) -> str:
+        if self.database_url_sync:
+            return self.database_url_sync
+        # Reverse of the asyncpg normalization above: swap the driver back,
+        # and psycopg2 wants sslmode=require (libpq convention), not ssl=require.
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://").replace(
+            "ssl=require", "sslmode=require"
+        )
 
 
 @lru_cache

@@ -19,11 +19,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.biometrics import Biometrics
 from app.models.inflammation import InflammationScore
+from app.models.user import User
 
 
 class InflammationRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def user_exists(self, user_id: str) -> bool:
+        """Folded in here rather than a separate UserRepository class — this
+        was the ONLY thing that class did, and 'UserRepository' is the
+        filename the real sync repo backing users_controller.py needs to
+        occupy. Not worth a naming collision over a one-line check."""
+        result = await self.db.execute(select(User.id).where(User.id == user_id))
+        return result.scalar_one_or_none() is not None
 
     async def get(self, user_id: str, metric_date: date) -> InflammationScore | None:
         result = await self.db.execute(
