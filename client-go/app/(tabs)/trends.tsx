@@ -12,7 +12,7 @@ import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
 import { ActivityIndicator, Dimensions, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
+import Svg, { Circle, Line, Polyline, Rect, Text as SvgText } from "react-native-svg";
 import { getTrendSeries, type Point, type RangeKey, type TrendSeries } from "@/src/data/appData";
 
 const SERIF = Platform.select({ ios: "Georgia", android: "serif", default: "serif" });
@@ -64,6 +64,8 @@ export default function TrendsScreen() {
         <Text style={styles.empty}>No profile yet. Finish onboarding to begin.</Text>
       ) : (
         <>
+          {/* Score on top (the output), then its inputs HRV and resting HR. */}
+          <ScoreChart points={data.score.points} refLine={data.score.baseline} provisional={data.score.provisional} />
           <Chart title="Heart rate variability" unit="ms" points={data.hrv.points} baseline={data.hrv.baseline} color="#3E7CB0" />
           <Chart title="Resting heart rate" unit="bpm" points={data.rhr.points} baseline={data.rhr.baseline} color="#C4603C" />
           <DateAxis points={data.rhr.points} />
@@ -83,6 +85,51 @@ function resNote(range: RangeKey, data: TrendSeries | null): string | null {
 
 const CHART_H = 150;
 const PAD = { l: 42, r: 14, t: 12, b: 10 };
+const SPECTRUM = ["#3E9E5B", "#63A84C", "#8CB03F", "#B2A63A", "#CE8B39", "#D96F3C", "#D8523E", "#C43C2E"];
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+// The INFLAMMATION SCORE chart. Unlike HRV/RHR it uses a FIXED 0-5 scale with the heat
+// spectrum drawn faintly behind the line — so a given height means a given level (the
+// same visual language as the Today tab; auto-scaling would make a calm week look
+// dramatic). Reference line is the 3.0 elevated threshold, not a baseline median (the
+// score is already a deviation measure). Empty before day 15, shown anyway with a note
+// so the layout doesn't jump. Same x-mapping as the other charts, so columns align.
+function ScoreChart({ points, refLine, provisional }: { points: Point[]; refLine: number | null; provisional: boolean }) {
+  const present = points.filter((p): p is Point & { value: number } => p.value != null);
+  const plotW = CHART_W - PAD.l - PAD.r, plotH = CHART_H - PAD.t - PAD.b;
+  const n = points.length;
+  const X = (i: number) => PAD.l + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const Y = (v: number) => PAD.t + (1 - clamp(v, 0, 5) / 5) * plotH; // FIXED 0-5 axis
+
+  // Break at gaps (learning days / wear); a partial-bucket segment is dashed + lighter.
+  const connect = present.length >= 4;
+  const segs: { d: string; dashed: boolean }[] = [];
+  if (connect) {
+    for (let k = 0; k < points.length - 1; k++) {
+      const a = points[k], b = points[k + 1];
+      if (a.value == null || b.value == null) continue;
+      segs.push({ d: `${X(a.i)},${Y(a.value)} ${X(b.i)},${Y(b.value)}`, dashed: a.partial || b.partial });
+    }
+  }
+
+  return (
+    <View style={styles.chartBlock}>
+      <Text style={styles.chartTitle}>Inflammation score <Text style={styles.chartUnit}>(0–5)</Text></Text>
+      <Svg width={CHART_W} height={CHART_H}>
+        {/* faint heat bands: green (calm) at the bottom, red (hot) at the top */}
+        {SPECTRUM.map((c, k) => (
+          <Rect key={k} x={PAD.l} y={PAD.t + (1 - (k + 1) / SPECTRUM.length) * plotH} width={plotW} height={plotH / SPECTRUM.length + 0.5} fill={c} opacity={0.12} />
+        ))}
+        {refLine != null && <Line x1={PAD.l} x2={CHART_W - PAD.r} y1={Y(refLine)} y2={Y(refLine)} stroke="#8A8A8A" strokeDasharray="3 3" strokeWidth={1} />}
+        {refLine != null && <SvgText x={CHART_W - PAD.r} y={Y(refLine) - 4} fontSize={9} fill="#7A7A7A" textAnchor="end">elevated {refLine.toFixed(1)}</SvgText>}
+        {segs.map((s, i) => <Polyline key={i} points={s.d} fill="none" stroke="#333" strokeWidth={2} strokeDasharray={s.dashed ? "4 3" : undefined} opacity={s.dashed ? 0.5 : 1} />)}
+        {present.map((p) => <Circle key={p.i} cx={X(p.i)} cy={Y(p.value)} r={connect ? 1.6 : 3} fill="#333" opacity={p.partial ? 0.45 : 1} />)}
+        {present.length === 0 && <SvgText x={PAD.l + plotW / 2} y={PAD.t + plotH / 2 + 4} fontSize={13} fill="#888" textAnchor="middle">Your score starts on day 15.</SvgText>}
+      </Svg>
+      {provisional && <Text style={styles.scoreNote}>Lighter, dashed line = provisional score — lower confidence until day 28.</Text>}
+    </View>
+  );
+}
 
 // LINE, not bar — deliberate:
 //  - these are absolute values on a meaningful non-zero baseline (resting HR ~57);
@@ -183,6 +230,7 @@ const styles = StyleSheet.create({
   chartBlock: { marginTop: 26 },
   chartTitle: { fontSize: 15, fontWeight: "600", color: "#333", marginBottom: 6, fontFamily: SERIF },
   chartUnit: { color: "#AAA", fontWeight: "400" },
+  scoreNote: { fontSize: 11, color: "#999", marginTop: 4, fontStyle: "italic", fontFamily: SERIF },
   axisLabel: { fontSize: 10, color: "#AAA" },
   noData: { alignItems: "center", justifyContent: "center", backgroundColor: "#FAFAFA", borderRadius: 8 },
   noDataText: { color: "#BBB", fontSize: 13, fontStyle: "italic", fontFamily: SERIF },

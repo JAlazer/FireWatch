@@ -130,13 +130,19 @@ export interface TrendSeries {
   spanDays: number;
   res: Res;
   dropped: boolean; // resolution dropped to daily because history is short
+  // inflammation score (0-5); baseline carries the 3.0 elevated ref line; provisional =
+  // any visible bucket is in the low-confidence 15-27 data-day region (drives the note).
+  score: { points: Point[]; baseline: number | null; provisional: boolean };
   hrv: TrendMetric;
   rhr: TrendMetric;
 }
 
+const SCORE_REF = 3; // the elevated threshold (heat >= 3 iff elevated) — the score's meaningful reference
+
 export async function getTrendSeries(range: RangeKey): Promise<TrendSeries> {
   const profile = await loadOnboarding(asyncStorageAdapter);
-  if (!profile) return { hasProfile: false, spanDays: 0, res: "day", dropped: false, hrv: { points: [], baseline: null }, rhr: { points: [], baseline: null } };
+  const noData: TrendMetric = { points: [], baseline: null };
+  if (!profile) return { hasProfile: false, spanDays: 0, res: "day", dropped: false, score: { points: [], baseline: null, provisional: false }, hrv: noData, rhr: noData };
 
   const now = Date.now();
   const startMs = Date.parse(profile.startDate);
@@ -145,18 +151,43 @@ export async function getTrendSeries(range: RangeKey): Promise<TrendSeries> {
   const fromMs = win == null ? startMs : Math.max(startMs, now - win * DAY);
 
   const provider = buildProvider(profile, { now: () => now });
+  // Query FULL history: HRV/RHR daily values are range-independent (window-day values are
+  // identical to a windowed query, so the HRV/RHR charts are unchanged), and the SCORE
+  // needs the full history for its baseline + hysteresis.
   const [hrvS, rhrS] = await Promise.all([
-    provider.queryQuantitySamples(HRV, { from: new Date(fromMs), to: new Date(now + DAY) }),
-    provider.queryQuantitySamples(RHR, { from: new Date(fromMs), to: new Date(now + DAY) }),
+    provider.queryQuantitySamples(HRV, { from: new Date(startMs), to: new Date(now + DAY) }),
+    provider.queryQuantitySamples(RHR, { from: new Date(startMs), to: new Date(now + DAY) }),
   ]);
   const hd = dailyMeans(hrvS), rd = dailyMeans(rhrS);
   const fromDay = Math.floor(fromMs / DAY), toDay = Math.floor(now / DAY);
 
+  // Score daily heat, MASKED to start at the 15th DATA-day (both signals present) — the
+  // same gate as the Today tab. Before that the score doesn't exist -> gaps (never
+  // interpolated), and if there aren't 15 data-days yet the score series is empty.
+  const commonSorted = [...hd.keys()].filter((d) => rd.has(d)).sort((a, b) => a - b);
+  const day15 = commonSorted.length >= 15 ? commonSorted[14] : null;   // score starts here
+  const day28 = commonSorted.length >= 28 ? commonSorted[27] : Infinity; // full confidence from here
+  const scoreDaily = new Map<number, number>();
+  if (day15 != null) {
+    for (const r of scoreSeries(hrvS, rhrS, profile.startDate, iso(now))) {
+      const d = Math.floor(Date.parse(r.day) / DAY);
+      if (d >= day15 && r.heat != null) scoreDaily.set(d, r.heat);
+    }
+  }
+
   const res = resolveRes(range, spanDays);
   const dropped = (range === "1Y" || range === "ALL") && res === "day";
   const showBaseline = range === "7D" || range === "1M"; // a single 28d median isn't representative over long windows
+
+  // Score points: bucketize, then mark PROVISIONAL buckets (15-27 data-days, before the
+  // 28th) lighter by reusing the partial flag — the same visual treatment as incomplete
+  // periods. Days 1-14 are already gaps (masked above); day 28+ stay solid.
+  const isProvisional = (p: Point) => p.value != null && Math.floor(p.t / DAY) < day28;
+  const scorePts = bucketize(scoreDaily, fromDay, toDay, res).map((p) => (isProvisional(p) ? { ...p, partial: true } : p));
+
   return {
     hasProfile: true, spanDays, res, dropped,
+    score: { points: scorePts, baseline: showBaseline ? SCORE_REF : null, provisional: scorePts.some(isProvisional) },
     hrv: { points: bucketize(hd, fromDay, toDay, res), baseline: showBaseline ? baselineMedian(hd, toDay) : null },
     rhr: { points: bucketize(rd, fromDay, toDay, res), baseline: showBaseline ? baselineMedian(rd, toDay) : null },
   };
