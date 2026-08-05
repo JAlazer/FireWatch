@@ -1,89 +1,84 @@
-from datetime import datetime
+"""
+Inflammation service — two separate paths on purpose:
 
-from fastapi import HTTPException
+  get_for_day()  — the READ path. Fast: one row lookup, or (if not stored
+                    yet) one cheap count query. Never runs score_series().
+                    This is what the GET /inflammation endpoint calls.
 
-from app.repository.base_repository import BaseRepository
-from app.schemas.biometrics import BiometricsCreate
-from app.schemas.inflammation import InflammationResponse
-from app.services import baseline_service
+  recompute()    — the WRITE path. Runs score_series() over the lookback
+                    window and persists today's result if it's actually
+                    "scored". This should be called from an
+                    ingestion-triggered job or nightly cron — NOT from the
+                    GET path, since re-walking 56+3 days of samples on every
+                    request is wasted work when nothing's changed since the
+                    last ingestion.
+"""
 
-# Metrics where higher values are healthier — z-scores for these are negated
-# so all directed z-scores point in the "more inflammation" direction.
-_GOOD_WHEN_HIGH = {"hrv", "spo2", "sleep_hours"}
+from datetime import date, datetime, timedelta, timezone
 
-_WEIGHTS: dict[str, float] = {
-    "hrv": 2.0,  # primary signal per PROJECT_VISION.md
-    "resting_heart_rate": 1.0,
-    "skin_temperature": 1.0,
-    "respiratory_rate": 1.0,
-    "spo2": 1.0,
-    "sleep_hours": 1.0,
-}
-_TOTAL_WEIGHT = sum(_WEIGHTS.values())
+from app.ml.inflammation_score import Scoring, score_series
+from app.repository.inflammation_repo import InflammationRepository
+from app.schemas.inflammation import InflammationResponse, InflammationStatus
 
-_METRIC_LABELS: dict[str, str] = {
-    "hrv": "heart rate variability",
-    "resting_heart_rate": "resting heart rate",
-    "skin_temperature": "skin temperature",
-    "respiratory_rate": "respiratory rate",
-    "spo2": "blood oxygen",
-    "sleep_hours": "sleep duration",
-}
+# level -> human-facing bucket for the schema's `status` column. Not derived
+# from score.ts (it doesn't define one) — a judgment call, flagged so it's a
+# deliberate choice rather than an inherited default. Revisit if 2/3 feels
+# like the wrong split once real data exists.
+_STATUS_LABELS = {1: "low", 2: "low", 3: "moderate", 4: "high", 5: "high"}
 
 
-def _score_to_level(score: float) -> int:
-    if score < -0.5:
-        return 1
-    if score < 0.0:
-        return 2
-    if score < 0.5:
-        return 3
-    if score < 1.0:
-        return 4
-    return 5
+def _status_label(level: int) -> str:
+    return _STATUS_LABELS[level]
 
 
-def _driver_phrase(metric: str) -> str:
-    label = _METRIC_LABELS[metric]
-    if metric in _GOOD_WHEN_HIGH:
-        return f"low {label}"
-    return f"elevated {label}"
+class InflammationService:
+    def __init__(self, repo: InflammationRepository):
+        self.repo = repo
 
+    async def get_for_day(self, user_id: str, target_date: date) -> InflammationResponse:
+        stored = await self.repo.get(user_id, target_date)
+        if stored is not None:
+            return InflammationResponse(
+                user_id=user_id,
+                date=target_date,
+                status=InflammationStatus.scored,
+                score=stored.score,
+                status_label=stored.status,
+                insight_text=stored.insight_text,
+                days_of_history=Scoring.BASELINE_MIN_DAYS + Scoring.ROLL_DAYS,  # already past threshold
+                days_until_scored=0,
+                computed_at=stored.computed_at,
+            )
 
-def _build_insight(directed_z: dict[str, float], level: int) -> str:
-    top_drivers = [m for m, z in sorted(directed_z.items(), key=lambda kv: kv[1], reverse=True) if z > 0.3][:2]
-    if not top_drivers:
-        return "Your biometric markers are within a healthy range."
-    phrases = " and ".join(_driver_phrase(m) for m in top_drivers)
-    if level <= 2:
-        return f"Slight deviation detected — {phrases}. Monitor for changes."
-    if level == 3:
-        return f"{phrases.capitalize()} is contributing to a moderate inflammation signal."
-    return f"{phrases.capitalize()} is the primary driver of your inflammation score."
+        lookback_start = target_date - timedelta(days=Scoring.BASELINE_MAX_DAYS + Scoring.ROLL_DAYS)
+        days_with_data = await self.repo.count_distinct_days(
+            user_id, metric_types=["hrv", "resting_hr"], start=lookback_start, end=target_date,
+        )
+        days_needed = Scoring.BASELINE_MIN_DAYS + Scoring.ROLL_DAYS
 
+        return InflammationResponse(
+            user_id=user_id,
+            date=target_date,
+            status=InflammationStatus.calibrating,
+            days_of_history=days_with_data,
+            days_until_scored=max(0, days_needed - days_with_data),
+        )
 
-def get_inflammation_score(user_id: str, biometrics_repo: BaseRepository) -> InflammationResponse:
-    raw = biometrics_repo.get(user_id)
-    if raw is None:
-        raise HTTPException(status_code=404, detail="Biometrics not found for user")
+    async def recompute(self, user_id: str, target_date: date) -> InflammationResponse:
+        lookback_start = target_date - timedelta(days=Scoring.BASELINE_MAX_DAYS + Scoring.ROLL_DAYS)
+        hrv_samples = await self.repo.get_samples_for_scoring(user_id, "hrv", lookback_start, target_date)
+        rhr_samples = await self.repo.get_samples_for_scoring(user_id, "resting_hr", lookback_start, target_date)
 
-    biometrics_fields = set(BiometricsCreate.model_fields.keys())
-    biometrics = BiometricsCreate(**{k: raw[k] for k in biometrics_fields if k in raw})
+        result = score_series(hrv_samples, rhr_samples, target_date, target_date)[0]
 
-    z_scores = baseline_service.compute_z_scores(biometrics)
-    directed_z = {
-        field: (-z if field in _GOOD_WHEN_HIGH else z)
-        for field, z in z_scores.items()
-    }
+        if result.status == "scored":
+            await self.repo.upsert(
+                user_id=user_id,
+                metric_date=target_date,
+                score=result.score,
+                status=_status_label(result.level),
+                insight_text=None,  # LLM insight generation is a separate concern from scoring
+                computed_at=datetime.now(timezone.utc),
+            )
 
-    composite = sum(_WEIGHTS[f] * z for f, z in directed_z.items()) / _TOTAL_WEIGHT
-    level = _score_to_level(composite)
-    insight = _build_insight(directed_z, level)
-
-    return InflammationResponse(
-        user_id=user_id,
-        score=round(composite, 3),
-        level=level,
-        insight=insight,
-        computed_at=datetime.utcnow(),
-    )
+        return await self.get_for_day(user_id, target_date)
