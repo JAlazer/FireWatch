@@ -10,7 +10,7 @@ class UserCreate(BaseModel):
 
 class UserResponse(BaseModel):
     user_id: str
-    name: str
+    name: str | None = None
     email: str
     created_at: datetime
     

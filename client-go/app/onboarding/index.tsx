@@ -1,3 +1,6 @@
+import DisclosureSection from "@/components/onboarding/DisclosureSection";
+import TierSelect from "@/components/onboarding/TierSelect";
+import ToggleChip from "@/components/onboarding/ToggleChip";
 import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
 import { useState } from "react";
@@ -34,99 +37,23 @@ const MED_TYPES = [
   "Steroid or immune-suppressing medication",
 ];
 
-// One reusable chip: outlined when off ("no"), filled color when on ("yes").
-function ToggleChip({
-  label,
-  selected,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={[styles.chip, selected && styles.chipSelected]}
-    >
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
+// Stress level is a single-select tier, not a flat yes/no. These labels are
+// exactly what markers.tsx's STRESS_MARKERS keys on — don't rename without
+// updating both.
+const STRESS_LEVELS = ["Low", "Moderate", "High"];
+ 
+// Smoking/drinking are single-select frequencies. Not picking any chip means
+// "never" (handled at submit time in markers.tsx). Labels match
+// SMOKE_MARKERS / DRINK_MARKERS keys in markers.tsx exactly.
+const SMOKE_FREQUENCIES = ["Never", "Occasionally", "Daily", "Heavily"];
+const DRINK_FREQUENCIES = ["Never", "Occasionally", "Weekly", "Daily"];
 
-// A parent yes/no question that reveals a multi-select list. Once at least one
-// option is picked, the list collapses into a compact summary row with a
-// chevron (▾ collapsed / ▴ expanded); tapping the summary toggles it open so
-// picks can be changed. With nothing picked, the full list stays open.
-function DisclosureSection({
-  question,
-  subLabel,
-  options,
-  isOpen,
-  onToggleOpen,
-  selected,
-  onSelect,
-  expanded,
-  onToggleExpanded,
-}: {
-  question: string;
-  subLabel: string;
-  options: string[];
-  isOpen: boolean;
-  onToggleOpen: () => void;
-  selected: string[];
-  onSelect: (item: string) => void;
-  expanded: boolean;
-  onToggleExpanded: () => void;
-}) {
-  const hasPicks = selected.length > 0;
-  const showList = isOpen && (!hasPicks || expanded);
 
-  return (
-    <View>
-      {/* parent on/off — untapping hides the whole section */}
-      <View style={styles.wrapRow}>
-        <ToggleChip label={question} selected={isOpen} onPress={onToggleOpen} />
-      </View>
-
-      {/* compact summary row, shown only once something is picked */}
-      {isOpen && hasPicks && (
-        <Pressable style={styles.summaryRow} onPress={onToggleExpanded}>
-          <Text style={styles.summaryText} numberOfLines={2}>
-            {selected.join(", ")}
-          </Text>
-          <Text style={styles.chev}>{expanded ? "▴" : "▾"}</Text>
-        </Pressable>
-      )}
-
-      {/* full option list */}
-      {showList && (
-        <View style={styles.reveal}>
-          <Text style={styles.subLabel}>
-            {subLabel} <Text style={styles.hint}>(tap any)</Text>
-          </Text>
-          <View style={styles.wrapRow}>
-            {options.map((o) => (
-              <ToggleChip
-                key={o}
-                label={o}
-                selected={selected.includes(o)}
-                onPress={() => onSelect(o)}
-              />
-            ))}
-          </View>
-        </View>
-      )}
-    </View>
-  );
-}
 
 export default function Screen1() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-
+ 
   // Age: try HealthKit (null for now) → otherwise the user picks it on the wheel.
   // Check HealthKit FIRST: if it supplies an age, it pre-fills here (Continue
   // enabled, chip shows it, still tappable to edit). It's stubbed to null for
@@ -134,15 +61,17 @@ export default function Screen1() {
   // fallback. null = no age yet.
   const [age, setAge] = useState<number | null>(getHealthKitAge());
   const [ageOpen, setAgeOpen] = useState(false); // is the wheel showing?
-
-  // Four lifestyle toggles.
-  const [life, setLife] = useState<Record<LifeKey, boolean>>({
-    autoimmune: false,
-    stressed: false,
-    smokes: false,
-    drinks: false,
-  });
-
+ 
+  // Autoimmune stays a flat yes/no — unlike stress/smoking/drinking it isn't
+  // a frequency or tier, so it doesn't need TierSelect.
+  const [autoimmune, setAutoimmune] = useState(false);
+ 
+  // Tiers/frequencies — single-select, null = not answered ("never" for
+  // smoking/drinking, no adjustment for stress).
+  const [stressLevel, setStressLevel] = useState<string | null>(null);
+  const [smokeFrequency, setSmokeFrequency] = useState<string | null>(null);
+  const [drinkFrequency, setDrinkFrequency] = useState<string | null>(null);
+ 
   // Progressive-disclosure sections. `expanded` controls whether the full
   // option list shows (true) or is collapsed to a summary row (false).
   const [sick, setSick] = useState(false);
@@ -151,11 +80,7 @@ export default function Screen1() {
   const [meds, setMeds] = useState(false);
   const [medTypes, setMedTypes] = useState<string[]>([]);
   const [medsExpanded, setMedsExpanded] = useState(false);
-
-  function toggleLife(key: LifeKey) {
-    setLife((prev) => ({ ...prev, [key]: !prev[key] }));
-  }
-
+ 
   // Picking/unpicking a sub-option collapses back to the summary. (If none are
   // left, the full list stays open anyway — there's nothing to summarize.)
   function selectSickType(item: string) {
@@ -170,7 +95,7 @@ export default function Screen1() {
     );
     setMedsExpanded(false);
   }
-
+ 
   // Turning a parent off clears its picks and resets its expand state.
   function toggleSick() {
     setSick((prev) => {
@@ -190,7 +115,7 @@ export default function Screen1() {
       return !prev;
     });
   }
-
+ 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView
@@ -204,7 +129,7 @@ export default function Screen1() {
           This helps us know what to track. Nothing is shared without your
           say-so.
         </Text>
-
+ 
         {/* ---- Age (tap the chip to open the scroll wheel) ---- */}
         <Text style={styles.label}>Your age</Text>
         <View style={styles.wrapRow}>
@@ -235,22 +160,43 @@ export default function Screen1() {
             </Pressable>
           </View>
         )}
-
-        {/* ---- Four lifestyle toggles ---- */}
-        <Text style={styles.label}>
-          Which of these apply? <Text style={styles.hint}>(tap any)</Text>
-        </Text>
+ 
+        {/* ---- Autoimmune (flat toggle) ---- */}
+        <Text style={styles.label}>Do either of these apply?</Text>
         <View style={styles.wrapRow}>
-          {LIFESTYLE.map((item) => (
-            <ToggleChip
-              key={item.key}
-              label={item.label}
-              selected={life[item.key]}
-              onPress={() => toggleLife(item.key)}
-            />
-          ))}
+          <ToggleChip
+            label="Autoimmune or inflammatory condition"
+            selected={autoimmune}
+            onPress={() => setAutoimmune((v) => !v)}
+          />
         </View>
-
+ 
+        {/* ---- Stress / smoking / drinking tiers ---- */}
+        <View style={styles.sectionGap}>
+          <TierSelect
+            label="How stressed have you been lately?"
+            options={STRESS_LEVELS}
+            value={stressLevel}
+            onChange={setStressLevel}
+          />
+        </View>
+        <View style={styles.sectionGap}>
+          <TierSelect
+            label="How often do you smoke?"
+            options={SMOKE_FREQUENCIES}
+            value={smokeFrequency}
+            onChange={setSmokeFrequency}
+          />
+        </View>
+        <View style={styles.sectionGap}>
+          <TierSelect
+            label="How often do you drink alcohol?"
+            options={DRINK_FREQUENCIES}
+            value={drinkFrequency}
+            onChange={setDrinkFrequency}
+          />
+        </View>
+ 
         {/* ---- Progressive disclosure: recent illness ---- */}
         <Text style={styles.label}>Recent health</Text>
         <DisclosureSection
@@ -264,7 +210,7 @@ export default function Screen1() {
           expanded={sickExpanded}
           onToggleExpanded={() => setSickExpanded((v) => !v)}
         />
-
+ 
         {/* ---- Progressive disclosure: medications ---- */}
         <View style={styles.sectionGap}>
           <DisclosureSection
@@ -280,20 +226,17 @@ export default function Screen1() {
           />
         </View>
       </ScrollView>
-
+ 
       {/* ---- Continue pinned at the bottom ---- */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
           disabled={age === null}
           onPress={() => {
-            // Collect which of the six items are on, then carry everything to
-            // Screen 2 — including age and the specific sick/med sub-types,
-            // which used to get dropped here (Screen 2 only received the
-            // top-level toggle keys before, never age/sickTypes/medTypes).
+            // "selected" now only carries flat flags: autoimmune, sick, meds.
+            // Stress/smoking/drinking travel as their own tier params below,
+            // matching what markers.tsx (Screen 2) actually reads.
             const selectedKeys = [
-              ...Object.entries(life)
-                .filter(([, on]) => on)
-                .map(([key]) => key),
+              ...(autoimmune ? ["autoimmune"] : []),
               ...(sick ? ["sick"] : []),
               ...(meds ? ["meds"] : []),
             ];
@@ -314,6 +257,9 @@ export default function Screen1() {
                 birthDate,
                 sickTypes: sickTypes.join(","),
                 medTypes: medTypes.join(","),
+                stressLevel: stressLevel ?? "",
+                smokeTypes: smokeFrequency ?? "",
+                drinkTypes: drinkFrequency ?? "",
               },
             });
           }}
@@ -326,7 +272,8 @@ export default function Screen1() {
   );
 }
 
-const styles = StyleSheet.create({
+
+export const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F7F7F7" },
   scroll: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
 

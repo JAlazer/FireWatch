@@ -14,3 +14,7 @@ def get_user(user_id: str, repo: BaseRepository) -> UserResponse:
 def create_user(data: UserCreate, repo: BaseRepository) -> UserResponse:
     record = repo.create(data.model_dump())
     return UserResponse(**record)
+
+def get_all_users(repo: BaseRepository) -> list[UserResponse]:
+    records = repo.get_all()
+    return [UserResponse(**record) for record in records]

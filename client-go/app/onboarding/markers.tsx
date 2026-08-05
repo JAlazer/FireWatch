@@ -1,4 +1,3 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
@@ -18,6 +17,8 @@ import { completeOnboarding } from "@/src/onboarding/completeOnboarding";
 import { rawToLifestyle, rawToOnboarding, type RawOnboardingAnswers } from "@/src/onboarding/projections";
 import { asyncStorageAdapter } from "@/src/storage/asyncStorage";
 import { newSeed } from "@/src/storage/onboardingStore";
+import { approximateBirthDate, mapDrinkingFrequency, mapSmokingFrequency, mapStressLevel } from "@/utils";
+import MarkerRow from "@/components/onboarding/MarkerRow";
 
 // Markers shown to everyone, regardless of what they picked on Screen 1.
 const ALWAYS_MARKERS = ["Heart rate variability", "Resting heart rate"];
@@ -36,7 +37,7 @@ const STRESS_MARKERS: Record<string, string[]> = {
 const SMOKE_MARKERS: Record<string, string[]> = {
   Occasionally: ["Respiratory rate"],
   Daily: ["Respiratory rate", "Blood oxygen"],
-  "Heavily (pack+/day)": ["Respiratory rate", "Blood oxygen", "Skin temperature"],
+  Heavily: ["Respiratory rate", "Blood oxygen", "Skin temperature"],
 };
 const DRINK_MARKERS: Record<string, string[]> = {
   Occasionally: ["Sleep"],
@@ -131,7 +132,7 @@ export default function Screen2() {
   const parsedMedTypes = (medTypes ?? "").split(",").filter(Boolean);
   const parsedSmokeTypes = (smokeTypes ?? "").split(",").filter(Boolean);
   const parsedDrinkTypes = (drinkTypes ?? "").split(",").filter(Boolean);
-
+ 
   // Build the "because of what you shared" markers — the deduplicated union
   // across every data point collected on Screen 1, not just the four flat
   // conditions from before. Each category only contributes if it actually
@@ -147,9 +148,16 @@ export default function Screen2() {
   parsedDrinkTypes.forEach((t) => DRINK_MARKERS[t]?.forEach((m) => union.add(m)));
   parsedSickTypes.forEach((t) => SICK_TYPE_MARKERS[t]?.forEach((m) => union.add(m)));
   parsedMedTypes.forEach((t) => MED_TYPE_MARKERS[t]?.forEach((m) => union.add(m)));
-
+ 
   const sharedMarkers = union.size > 0 ? [...union] : DEFAULT_MARKERS;
-
+ 
+  // Full set actually persisted to LIFESTYLE.tracked_markers — always
+  // markers plus whatever was earned above, deduped, converted to stable
+  // codes (see MARKER_CODES).
+  const trackedMarkerCodes = [...new Set([...ALWAYS_MARKERS, ...sharedMarkers])].map(
+    (m) => MARKER_CODES[m],
+  );
+ 
   // One combined caveat note for recent illness and/or flagged medications.
   const sick = chosen.has("sick");
   const meds = chosen.has("meds");
@@ -164,7 +172,7 @@ export default function Screen2() {
     caveat =
       "Heads up: a medication you flagged (like a beta-blocker) shapes your baseline heart-rate signals. Your readings are taken on that medicated baseline, so we read them in that context rather than as a distortion. We'll keep that in mind.";
   }
-
+ 
   async function handleFinish() {
     setSubmitError(null);
     setSubmitting(true);
@@ -203,7 +211,7 @@ export default function Screen2() {
       setSubmitting(false);
     }
   }
-
+ 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView
@@ -214,7 +222,7 @@ export default function Screen2() {
         <Text style={styles.step}>Step 2 of 2</Text>
         <Text style={styles.heading}>We&apos;ll track these for you</Text>
         <Text style={styles.subtitle}>Based on what you shared.</Text>
-
+ 
         {/* ---- Always ---- */}
         <Text style={styles.label}>Always</Text>
         <View style={styles.list}>
@@ -222,7 +230,7 @@ export default function Screen2() {
             <MarkerRow key={m} name={m} color="#1A1A1A" />
           ))}
         </View>
-
+ 
         {/* ---- Because of what you shared ---- */}
         <Text style={styles.label}>Because of what you shared</Text>
         <View style={styles.list}>
@@ -230,14 +238,14 @@ export default function Screen2() {
             <MarkerRow key={m} name={m} color="#E55A4E" />
           ))}
         </View>
-
+ 
         {/* ---- Caveat note (not a marker row) ---- */}
         {caveat && (
           <View style={styles.caveat}>
             <Text style={styles.caveatText}>{caveat}</Text>
           </View>
         )}
-
+ 
         {/* ---- Submission error, if any ---- */}
         {submitError && (
           <View style={styles.errorBox}>
@@ -245,7 +253,7 @@ export default function Screen2() {
           </View>
         )}
       </ScrollView>
-
+ 
       {/* ---- Finish: persists onboarding data, then hands off to the tabs ---- */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Pressable
