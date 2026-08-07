@@ -85,6 +85,8 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
             "clerk_user_id": "user_2mockClerkMaya",
             "email": "maya.chen@example.com",
             "created_at": datetime(2025, 1, 15, 9, 0, 0, tzinfo=timezone.utc),
+            "first_name": "Maya",
+            "last_name": "Spear"
         },
         "lifestyle": {
             "id": _uid("lifestyle", "maya"),
@@ -122,6 +124,8 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
             "clerk_user_id": "user_2mockClerkJames",
             "email": "james.okafor@example.com",
             "created_at": datetime(2025, 2, 3, 14, 30, 0, tzinfo=timezone.utc),
+            "first_name": "James",
+            "last_name": "Beast"
         },
         "lifestyle": {
             "id": _uid("lifestyle", "james"),
@@ -162,6 +166,8 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
             "clerk_user_id": "user_2mockClerkSofia",
             "email": "sofia.reyes@example.com",
             "created_at": datetime(2025, 3, 10, 11, 15, 0, tzinfo=timezone.utc),
+            "first_name": "Sofia",
+            "last_name": "First"
         },
         "lifestyle": {
             "id": _uid("lifestyle", "sofia"),
@@ -204,6 +210,8 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
             "clerk_user_id": "user_2mockClerkJohan",
             "email": "johan@example.com",
             "created_at": datetime(2026, 7, 31, 0, 0, 0, tzinfo=timezone.utc),
+            "first_name": "Johan",
+            "last_name": "Almanzar Nunez"
         },
         "lifestyle": {
             "id": _uid("lifestyle", "johan"),
