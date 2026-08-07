@@ -18,7 +18,8 @@ from app.repository.base_repository import BaseRepository
 def _to_dict(user: User) -> dict:
     return {
         "user_id": str(user.id),  # id -> user_id: see schemas/user.py's note
-        "name": user.name,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
         "email": user.email,
         "created_at": user.created_at,
     }
@@ -36,14 +37,18 @@ class UserRepository(BaseRepository[dict]):
         users = self.db.execute(select(User)).scalars().all()
         return [_to_dict(u) for u in users]
 
+    def get_by_clerk_id(self, clerk_user_id: str) -> dict | None:
+        user = self.db.execute(
+            select(User).where(User.clerk_user_id == clerk_user_id)
+        ).scalar_one_or_none()
+        return _to_dict(user) if user else None
+
     def create(self, data: dict) -> dict:
-        # No real Clerk auth yet (client doesn't send a clerk_user_id) —
-        # synthesize a placeholder so the NOT NULL/UNIQUE constraint is
-        # satisfied. Swap this for the real Clerk ID once auth is wired up.
         user = User(
             id=uuid.uuid4(),
-            clerk_user_id=f"pending_clerk_{uuid.uuid4()}",
-            name=data.get("name"),
+            clerk_user_id=data["clerk_user_id"],  # real value now, no placeholder
+            first_name=data["first_name"],
+            last_name=data["last_name"],
             email=data["email"],
             created_at=datetime.now(timezone.utc),
         )
@@ -55,8 +60,10 @@ class UserRepository(BaseRepository[dict]):
         user = self.db.execute(select(User).where(User.id == id)).scalar_one_or_none()
         if user is None:
             return None
-        if "name" in data:
-            user.name = data["name"]
+        if "first_name" in data:
+            user.first_name = data["first_name"]
+        if "last_name" in data:
+            user.last_name = data["last_name"]
         if "email" in data:
             user.email = data["email"]
         self.db.flush()

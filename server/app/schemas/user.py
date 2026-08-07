@@ -4,15 +4,17 @@ from pydantic import BaseModel
 
 
 class UserCreate(BaseModel):
-    name: str
+    first_name: str
+    last_name: str
     email: str
 
 
 class UserResponse(BaseModel):
     user_id: str
-    name: str 
+    first_name: str 
+    last_name: str 
     email: str
     created_at: datetime
 
-
-    
+class UserSyncResponse(UserResponse):
+    onboarding_completed: bool
